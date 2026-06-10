@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem \"C:\\\\Users\\\\100022\\\\01_works\\\\02_Metashape\\\\門\\\\colmap\" -Depth 2)",
+      "Bash(Select-Object FullName, Mode)"
+    ]
+  }
+}

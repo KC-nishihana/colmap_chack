@@ -47,16 +47,17 @@ _STATUS_COLORS: dict[str, QColor] = {
 
 # フィルタ選択肢 (表示名, 内部キー)
 _FILTER_OPTIONS: list[tuple[str, str]] = [
-    ("すべて",        "all"),
-    ("正常",          "ok"),
-    ("要確認",        "warn"),
-    ("未保存",        "not_saved"),
-    ("マスクなし",    "no_mask"),
-    ("サイズ不一致",  "size_mismatch"),
-    ("空マスク",      "empty_mask"),
-    ("全面マスク",    "full_mask"),
-    ("中間値あり",    "intermediate_values"),
-    ("読み込みエラー", "error"),
+    ("すべて",           "all"),
+    ("正常",             "ok"),
+    ("要確認",           "warn"),
+    ("未保存",           "not_saved"),
+    ("マスクなし",       "no_mask"),
+    ("サイズ不一致",     "size_mismatch"),
+    ("空マスク",         "empty_mask"),
+    ("全面マスク",       "full_mask"),
+    ("中間値あり",       "intermediate_values"),
+    ("読み込みエラー",   "error"),
+    ("COLMAP未登録",     "colmap_unregistered"),
 ]
 
 
@@ -100,23 +101,33 @@ def _matches_filter(entry: ImageEntry, filter_val: str) -> bool:
         return status == "intermediate_values"
     if filter_val == "error":
         return status in {"unreadable_image", "unreadable_mask"}
+    if filter_val == "colmap_unregistered":
+        return not entry.colmap_registered
     return True
 
 
 def _make_item(entry: ImageEntry) -> QListWidgetItem:
     status = get_entry_status(entry)
     label = _STATUS_LABELS.get(status, f"[{status}]")
-    text = f"{label} {entry.rel_path}"
+    colmap_tag = "" if entry.colmap_registered else " [未登録]"
+    text = f"{label}{colmap_tag} {entry.rel_path}"
     item = QListWidgetItem(text)
-    item.setForeground(_STATUS_COLORS.get(status, QColor(200, 200, 200)))
+    color = _STATUS_COLORS.get(status, QColor(200, 200, 200))
+    if not entry.colmap_registered:
+        color = QColor(int(color.red() * 0.7), int(color.green() * 0.7), int(color.blue() * 0.7))
+    item.setForeground(color)
     return item
 
 
 def _update_item(item: QListWidgetItem, entry: ImageEntry) -> None:
     status = get_entry_status(entry)
     label = _STATUS_LABELS.get(status, f"[{status}]")
-    item.setText(f"{label} {entry.rel_path}")
-    item.setForeground(_STATUS_COLORS.get(status, QColor(200, 200, 200)))
+    colmap_tag = "" if entry.colmap_registered else " [未登録]"
+    item.setText(f"{label}{colmap_tag} {entry.rel_path}")
+    color = _STATUS_COLORS.get(status, QColor(200, 200, 200))
+    if not entry.colmap_registered:
+        color = QColor(int(color.red() * 0.7), int(color.green() * 0.7), int(color.blue() * 0.7))
+    item.setForeground(color)
 
 
 class ImageListPanel(QWidget):

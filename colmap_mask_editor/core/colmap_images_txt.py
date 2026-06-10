@@ -21,7 +21,8 @@ def parse_images_txt(images_txt_path: Path) -> list[str]:
     try:
         text = images_txt_path.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
-        data_lines = [l for l in lines if l.strip() and not l.startswith("#")]
+        # コメント行のみ除外。空行(POINTS2D[]が空の場合)は除外しない
+        data_lines = [l for l in lines if not l.startswith("#")]
         # 奇数番目の行(0-indexed: 0, 2, 4...)が画像情報行
         for i in range(0, len(data_lines), 2):
             parts = data_lines[i].split()

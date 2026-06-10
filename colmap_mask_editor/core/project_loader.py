@@ -22,6 +22,7 @@ class ImageEntry:
     mask_size_mismatch: bool = False   # マスクとサイズ不一致
     is_modified: bool = False          # 未保存の編集あり
     check_result: Optional[Any] = None  # CheckResult (mask_checker.py)
+    colmap_registered: bool = False    # images.txt に登録済みか
 
 
 @dataclass
@@ -55,38 +56,42 @@ def load_project(root: Path) -> ProjectInfo:
     if not images_dir.exists():
         return info
 
-    # images.txt から画像名取得を試みる
-    colmap_names: list[str] = []
+    # images.txt からCOLMAP登録済み画像名のセットを取得（フィルタではなくメタデータ用）
+    colmap_name_set: set[str] = set()
     if images_txt and images_txt.exists():
-        colmap_names = parse_images_txt(images_txt)
+        colmap_name_set = set(parse_images_txt(images_txt))
 
-    if colmap_names:
-        # COLMAPの登録順を使用
-        for name in colmap_names:
-            img_path = images_dir / name
-            if img_path.exists() and img_path.suffix.lower() in {e.lower() for e in IMAGE_EXTENSIONS}:
-                rel = Path(name)
-                mask_path = _find_mask(masks_dir, rel) if masks_dir else None
-                entry = ImageEntry(
-                    image_path=img_path,
-                    rel_path=rel,
-                    mask_path=mask_path,
-                    has_mask=mask_path is not None,
-                )
-                info.entries.append(entry)
-    else:
-        # images/ を再帰検索
-        for img_path in sorted(images_dir.rglob("*")):
-            if img_path.is_file() and img_path.suffix in IMAGE_EXTENSIONS:
-                rel = img_path.relative_to(images_dir)
-                mask_path = _find_mask(masks_dir, rel) if masks_dir else None
-                entry = ImageEntry(
-                    image_path=img_path,
-                    rel_path=rel,
-                    mask_path=mask_path,
-                    has_mask=mask_path is not None,
-                )
-                info.entries.append(entry)
+    # images/ フォルダ内の全画像をスキャン（COLMAPの登録有無に関わらず）
+    # COLMAP登録済みの画像を先に、未登録を後に並べる
+    all_imgs: list[Path] = sorted(
+        (p for p in images_dir.rglob("*") if p.is_file() and p.suffix in IMAGE_EXTENSIONS)
+    )
+
+    # COLMAP登録順で先頭に並べ替え
+    if colmap_name_set:
+        registered: list[Path] = []
+        unregistered: list[Path] = []
+        for img_path in all_imgs:
+            rel_name = img_path.relative_to(images_dir).as_posix()
+            if rel_name in colmap_name_set or img_path.name in colmap_name_set:
+                registered.append(img_path)
+            else:
+                unregistered.append(img_path)
+        all_imgs = registered + unregistered
+
+    for img_path in all_imgs:
+        rel = img_path.relative_to(images_dir)
+        rel_name = rel.as_posix()
+        in_colmap = rel_name in colmap_name_set or img_path.name in colmap_name_set
+        mask_path = _find_mask(masks_dir, rel) if masks_dir else None
+        entry = ImageEntry(
+            image_path=img_path,
+            rel_path=rel,
+            mask_path=mask_path,
+            has_mask=mask_path is not None,
+            colmap_registered=in_colmap,
+        )
+        info.entries.append(entry)
 
     return info
 
