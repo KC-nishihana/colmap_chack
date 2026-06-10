@@ -4,7 +4,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from core.colmap_images_txt import parse_images_txt
 
@@ -21,6 +21,7 @@ class ImageEntry:
     has_mask: bool = False
     mask_size_mismatch: bool = False   # マスクとサイズ不一致
     is_modified: bool = False          # 未保存の編集あり
+    check_result: Optional[Any] = None  # CheckResult (mask_checker.py)
 
 
 @dataclass

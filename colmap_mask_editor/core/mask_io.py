@@ -84,9 +84,9 @@ def load_mask_or_empty(
 
 
 def _empty_mask(image_size: tuple[int, int]) -> np.ndarray:
-    """画像サイズに合わせた空(全0)マスクを生成"""
+    """画像サイズに合わせた空(全白=全有効)マスクを生成"""
     w, h = image_size
-    return np.zeros((h, w), dtype=np.uint8)
+    return np.full((h, w), 255, dtype=np.uint8)
 
 
 def get_edited_mask_path(project_root: Path, rel_path: Path) -> Path:
@@ -97,6 +97,18 @@ def get_edited_mask_path(project_root: Path, rel_path: Path) -> Path:
     # 拡張子を .png に変換
     rel_png = rel_path.with_suffix(".png")
     return project_root / "masks_edited" / rel_png
+
+
+def get_default_mask_path(project_root: Path, rel_path: Path) -> Path:
+    """Return the default source mask path under project/masks/."""
+    return project_root / "masks" / rel_path.with_suffix(".png")
+
+
+def get_source_mask_save_path(project_root: Path, entry) -> Path:
+    """Return the path that should be overwritten when saving a mask."""
+    if entry.mask_path is not None:
+        return entry.mask_path
+    return get_default_mask_path(project_root, entry.rel_path)
 
 
 def get_colmap_mask_path(project_root: Path, rel_path: Path) -> Path:
