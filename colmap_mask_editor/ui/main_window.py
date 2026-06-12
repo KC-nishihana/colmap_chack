@@ -49,7 +49,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("COLMAP Mask Editor v0.3")
+        self.setWindowTitle("COLMAP Mask Editor v0.4A")
         self.resize(1440, 900)
 
         self._project: Optional[ProjectInfo] = None
@@ -107,6 +107,7 @@ class MainWindow(QMainWindow):
         self._canvas = ImageCanvas()
         self._canvas.mask_changed.connect(self._on_mask_changed)
         self._canvas.mode_changed.connect(self._on_mode_changed)
+        self._canvas.status_message.connect(self._on_canvas_status_message)
         splitter.addWidget(self._canvas)
 
         # 右: コントロールパネル
@@ -137,12 +138,15 @@ class MainWindow(QMainWindow):
         self._mode_btn_group = QButtonGroup(self)
         self._mode_btns: dict[EditMode, QRadioButton] = {}
         mode_defs = [
-            (EditMode.BRUSH,    "ブラシ追加/削除 [B]"),
-            (EditMode.RECT_ADD, "矩形追加 [R]"),
-            (EditMode.RECT_DEL, "矩形削除 [Shift+R]"),
-            (EditMode.POLY_ADD, "ポリゴン追加 [P]"),
-            (EditMode.POLY_DEL, "ポリゴン削除 [Shift+P]"),
-            (EditMode.PAN,      "パン操作"),
+            (EditMode.BRUSH,           "ブラシ追加/削除 [B]"),
+            (EditMode.RECT_ADD,        "矩形追加 [R]"),
+            (EditMode.RECT_DEL,        "矩形削除 [Shift+R]"),
+            (EditMode.POLY_ADD,        "ポリゴン追加 [P]"),
+            (EditMode.POLY_DEL,        "ポリゴン削除 [Shift+P]"),
+            (EditMode.GRABCUT_ADD,     "GrabCut有効化 [G]"),
+            (EditMode.GRABCUT_DEL,     "GrabCut除外 [Shift+G]"),
+            (EditMode.GRABCUT_REPLACE, "GrabCut置換 [Ctrl+G]"),
+            (EditMode.PAN,             "パン操作"),
         ]
         for i, (mode, label) in enumerate(mode_defs):
             rb = QRadioButton(label)
@@ -153,6 +157,38 @@ class MainWindow(QMainWindow):
             mode_layout.addWidget(rb)
         self._mode_btn_group.idClicked.connect(self._on_mode_btn_clicked)
         layout.addWidget(mode_group)
+
+        # ----- GrabCut設定 -----
+        grabcut_group = QGroupBox("GrabCut設定")
+        grabcut_layout = QVBoxLayout(grabcut_group)
+
+        grabcut_layout.addWidget(QLabel("反復回数 (1〜20):"))
+        self._grabcut_iter_spin = QSpinBox()
+        self._grabcut_iter_spin.setRange(1, 20)
+        self._grabcut_iter_spin.setValue(5)
+        self._grabcut_iter_spin.setToolTip("GrabCutの反復回数。大きいほど精度が上がるが遅くなる")
+        self._grabcut_iter_spin.valueChanged.connect(self._canvas.set_grabcut_iter_count)
+        grabcut_layout.addWidget(self._grabcut_iter_spin)
+
+        self._grabcut_post_dilate_cb = QCheckBox("適用後に膨張")
+        self._grabcut_post_dilate_cb.setChecked(False)
+        self._grabcut_post_dilate_cb.toggled.connect(self._canvas.set_grabcut_post_dilate)
+        grabcut_layout.addWidget(self._grabcut_post_dilate_cb)
+
+        self._grabcut_post_erode_cb = QCheckBox("適用後に収縮")
+        self._grabcut_post_erode_cb.setChecked(False)
+        self._grabcut_post_erode_cb.toggled.connect(self._canvas.set_grabcut_post_erode)
+        grabcut_layout.addWidget(self._grabcut_post_erode_cb)
+
+        grabcut_layout.addWidget(QLabel("後処理カーネルサイズ:"))
+        self._grabcut_post_kernel_spin = QSpinBox()
+        self._grabcut_post_kernel_spin.setRange(1, 15)
+        self._grabcut_post_kernel_spin.setValue(3)
+        self._grabcut_post_kernel_spin.setSingleStep(2)
+        self._grabcut_post_kernel_spin.valueChanged.connect(self._canvas.set_grabcut_post_kernel_size)
+        grabcut_layout.addWidget(self._grabcut_post_kernel_spin)
+
+        layout.addWidget(grabcut_group)
 
         # ----- 差分表示 -----
         diff_group = QGroupBox("差分表示")
@@ -366,8 +402,11 @@ class MainWindow(QMainWindow):
             "Shift+R: 矩形削除\n"
             "P: ポリゴン追加\n"
             "Shift+P: ポリゴン削除\n"
-            "Enter: ポリゴン確定\n"
-            "Esc: ポリゴンキャンセル\n"
+            "G: GrabCut有効化\n"
+            "Shift+G: GrabCut除外\n"
+            "Ctrl+G: GrabCut置換\n"
+            "Enter: ポリゴン確定 / GrabCut適用\n"
+            "Esc: キャンセル\n"
             "Backspace: 最後の頂点を削除\n"
             "F: 差分表示ON/OFF\n"
             "M: マスク表示ON/OFF\n"
@@ -404,6 +443,10 @@ class MainWindow(QMainWindow):
             ("P",         lambda: self._set_mode(EditMode.POLY_ADD)),
             ("Shift+P",   lambda: self._set_mode(EditMode.POLY_DEL)),
             ("F",         self._toggle_diff),
+            # V0.4A GrabCut
+            ("G",         lambda: self._set_mode(EditMode.GRABCUT_ADD)),
+            ("Shift+G",   lambda: self._set_mode(EditMode.GRABCUT_DEL)),
+            ("Ctrl+G",    lambda: self._set_mode(EditMode.GRABCUT_REPLACE)),
         ]
         for key_str, slot in shortcuts:
             action = QAction(self)
@@ -501,7 +544,7 @@ class MainWindow(QMainWindow):
 
     def _update_title(self, entry: ImageEntry) -> None:
         modified = " *" if entry.is_modified else ""
-        self.setWindowTitle(f"COLMAP Mask Editor v0.3 - {entry.rel_path}{modified}")
+        self.setWindowTitle(f"COLMAP Mask Editor v0.4A - {entry.rel_path}{modified}")
 
     # ------------------------------------------------------------------ #
     # マスク統計パネル
@@ -546,11 +589,11 @@ class MainWindow(QMainWindow):
             except ValueError:
                 return str(p)
 
-        source_mask_path = get_source_mask_save_path(root, entry)
+        source_mask_path = get_source_mask_save_path(self._project.root, entry)
         self._stat_input_mask.setText(rel_str(source_mask_path) if source_mask_path.exists() else rel_str(entry.mask_path))
-        edited_path = get_edited_mask_path(root, entry.rel_path)
+        edited_path = get_edited_mask_path(self._project.root, entry.rel_path)
         self._stat_edited_mask.setText(rel_str(edited_path) if edited_path.exists() else "なし")
-        colmap_path = get_colmap_mask_path(root, entry.rel_path)
+        colmap_path = get_colmap_mask_path(self._project.root, entry.rel_path)
         self._stat_colmap_mask.setText(rel_str(colmap_path) if colmap_path.exists() else "なし")
 
     def _clear_stats_panel(self) -> None:
@@ -571,6 +614,9 @@ class MainWindow(QMainWindow):
         EditMode.RECT_DEL,
         EditMode.POLY_ADD,
         EditMode.POLY_DEL,
+        EditMode.GRABCUT_ADD,
+        EditMode.GRABCUT_DEL,
+        EditMode.GRABCUT_REPLACE,
         EditMode.PAN,
     ]
 
@@ -589,10 +635,12 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar_mode(self, mode_label: str) -> None:
         msg = self.statusBar().currentMessage()
-        # "|モード:" 以降を置換
         if "|モード:" in msg:
             msg = msg[: msg.index("|モード:")]
         self.statusBar().showMessage(f"{msg.strip()}  |モード: {mode_label}")
+
+    def _on_canvas_status_message(self, message: str, timeout: int) -> None:
+        self.statusBar().showMessage(message, timeout)
 
     # ------------------------------------------------------------------ #
     # 差分表示
@@ -770,7 +818,6 @@ class MainWindow(QMainWindow):
             return
         entry = self._project.entries[self._current_index]
         self._save_entry(entry, self._editor.mask)
-        # 保存後にベースラインを更新
         self._canvas.update_baseline()
         self.statusBar().showMessage(f"保存しました: {entry.rel_path}", 3000)
 

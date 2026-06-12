@@ -1,5 +1,5 @@
 """
-中央キャンバス: 画像表示・マスク半透明重ね・ブラシ/矩形/ポリゴン編集・差分表示・ズーム・パン
+中央キャンバス: 画像表示・マスク半透明重ね・ブラシ/矩形/ポリゴン/GrabCut編集・差分表示・ズーム・パン
 """
 
 from enum import Enum, auto
@@ -30,17 +30,25 @@ class EditMode(Enum):
     RECT_DEL = auto()
     POLY_ADD = auto()
     POLY_DEL = auto()
+    GRABCUT_ADD = auto()
+    GRABCUT_DEL = auto()
+    GRABCUT_REPLACE = auto()
     PAN = auto()
 
 
 _MODE_LABEL = {
-    EditMode.BRUSH:    "ブラシ",
-    EditMode.RECT_ADD: "矩形追加",
-    EditMode.RECT_DEL: "矩形削除",
-    EditMode.POLY_ADD: "ポリゴン追加",
-    EditMode.POLY_DEL: "ポリゴン削除",
-    EditMode.PAN:      "パン操作",
+    EditMode.BRUSH:          "ブラシ",
+    EditMode.RECT_ADD:       "矩形追加",
+    EditMode.RECT_DEL:       "矩形削除",
+    EditMode.POLY_ADD:       "ポリゴン追加",
+    EditMode.POLY_DEL:       "ポリゴン削除",
+    EditMode.GRABCUT_ADD:    "GrabCut有効化",
+    EditMode.GRABCUT_DEL:    "GrabCut除外",
+    EditMode.GRABCUT_REPLACE:"GrabCut置換",
+    EditMode.PAN:            "パン操作",
 }
+
+_GRABCUT_MODES = (EditMode.GRABCUT_ADD, EditMode.GRABCUT_DEL, EditMode.GRABCUT_REPLACE)
 
 
 class ImageCanvas(QWidget):
@@ -50,6 +58,7 @@ class ImageCanvas(QWidget):
 
     mask_changed = Signal()
     mode_changed = Signal(str)   # 編集モード名
+    status_message = Signal(str, int)  # メッセージ, タイムアウトms (0=持続)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -94,6 +103,17 @@ class ImageCanvas(QWidget):
         # 差分表示
         self._diff_mode: bool = False
         self._baseline_mask: Optional[np.ndarray] = None
+
+        # GrabCut設定
+        self._grabcut_iter_count: int = 5
+        self._grabcut_post_dilate: bool = False
+        self._grabcut_post_erode: bool = False
+        self._grabcut_post_kernel_size: int = 3
+
+        # GrabCutプレビュー状態
+        self._grabcut_preview_mask: Optional[np.ndarray] = None
+        self._grabcut_preview_mode: Optional[str] = None
+        self._grabcut_rect: Optional[tuple[int, int, int, int]] = None
 
         self.setMinimumSize(400, 300)
 
@@ -155,6 +175,20 @@ class ImageCanvas(QWidget):
         self._reset_edit_state()
         self.update()
 
+    # ----- GrabCut設定setter -----
+
+    def set_grabcut_iter_count(self, value: int) -> None:
+        self._grabcut_iter_count = max(1, min(20, value))
+
+    def set_grabcut_post_dilate(self, enabled: bool) -> None:
+        self._grabcut_post_dilate = enabled
+
+    def set_grabcut_post_erode(self, enabled: bool) -> None:
+        self._grabcut_post_erode = enabled
+
+    def set_grabcut_post_kernel_size(self, value: int) -> None:
+        self._grabcut_post_kernel_size = max(1, min(15, value))
+
     # ------------------------------------------------------------------ #
     # 描画
     # ------------------------------------------------------------------ #
@@ -193,7 +227,7 @@ class ImageCanvas(QWidget):
             painter.drawEllipse(QPoint(cx, cy), r, r)
             painter.restore()
 
-        # 矩形プレビュー
+        # 矩形プレビュー (RECT_ADD/DEL + GrabCut系モード)
         if self._rect_dragging and self._rect_start and self._rect_end:
             x0, y0 = self._rect_start
             x1, y1 = self._rect_end
@@ -202,10 +236,10 @@ class ImageCanvas(QWidget):
             wx1 = int(max(x0, x1) * self._scale + self._offset.x())
             wy1 = int(max(y0, y1) * self._scale + self._offset.y())
             painter.save()
-            if self._edit_mode == EditMode.RECT_ADD:
+            if self._edit_mode in (EditMode.RECT_ADD, EditMode.GRABCUT_ADD, EditMode.GRABCUT_REPLACE):
                 fill = QColor(255, 255, 255, 60)
                 border = QColor(255, 255, 255, 200)
-            else:
+            else:  # RECT_DEL or GRABCUT_DEL
                 fill = QColor(0, 120, 255, 60)
                 border = QColor(0, 120, 255, 200)
             painter.fillRect(wx0, wy0, wx1 - wx0, wy1 - wy0, fill)
@@ -243,21 +277,23 @@ class ImageCanvas(QWidget):
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-        if not self._mask_visible or self._editor is None:
-            return img
+        result = img
+        if self._mask_visible and self._editor is not None:
+            mask = self._editor.mask
+            if self._diff_mode and self._baseline_mask is not None and mask.shape == self._baseline_mask.shape:
+                result = self._build_diff_composite(img, mask)
+            elif mask.shape[:2] == img.shape[:2]:
+                overlay = img.copy()
+                r, g, b = self._mask_color
+                overlay[mask == 255] = [b, g, r]  # BGR
+                result = cv2.addWeighted(overlay, self._mask_opacity, img, 1.0 - self._mask_opacity, 0)
 
-        mask = self._editor.mask
+        # GrabCutプレビューをマスク表示ON/OFFに関わらず重ねる
+        if (self._grabcut_preview_mask is not None
+                and self._grabcut_preview_mask.shape[:2] == img.shape[:2]):
+            result = self._overlay_grabcut_preview(result)
 
-        if self._diff_mode and self._baseline_mask is not None and mask.shape == self._baseline_mask.shape:
-            return self._build_diff_composite(img, mask)
-
-        if mask.shape[:2] == img.shape[:2]:
-            overlay = img.copy()
-            r, g, b = self._mask_color
-            overlay[mask == 255] = [b, g, r]  # BGR
-            img = cv2.addWeighted(overlay, self._mask_opacity, img, 1.0 - self._mask_opacity, 0)
-
-        return img
+        return result
 
     def _build_diff_composite(self, img: np.ndarray, mask: np.ndarray) -> np.ndarray:
         """差分表示: 追加=緑, 削除=青, 変化なし=赤半透明"""
@@ -280,6 +316,29 @@ class ImageCanvas(QWidget):
         )[changed_mask]
 
         return result
+
+    def _overlay_grabcut_preview(self, base: np.ndarray) -> np.ndarray:
+        """GrabCutプレビュー結果を半透明オーバーレイで表示"""
+        if self._grabcut_preview_mask is None:
+            return base
+
+        region = self._grabcut_preview_mask == 255
+        if not np.any(region):
+            return base
+
+        # モードに応じた色 (BGR)
+        mode = self._grabcut_preview_mode
+        if mode == "add":
+            color = np.array([0, 220, 220], dtype=np.float32)    # 黄色 (GrabCut有効化)
+        elif mode == "remove":
+            color = np.array([200, 80, 0], dtype=np.float32)     # 青系 (GrabCut除外)
+        else:  # replace
+            color = np.array([50, 200, 80], dtype=np.float32)    # 緑系 (GrabCut置換)
+
+        result = base.copy().astype(np.float32)
+        alpha = 0.55
+        result[region] = result[region] * (1.0 - alpha) + color * alpha
+        return result.clip(0, 255).astype(np.uint8)
 
     # ------------------------------------------------------------------ #
     # マウス操作
@@ -325,9 +384,16 @@ class ImageCanvas(QWidget):
                     self._poly_points.append((mx, my))
                     self.update()
             elif event.button() == Qt.MouseButton.RightButton:
-                # 右クリックでキャンセル
                 self._poly_points.clear()
                 self.update()
+
+        elif mode in _GRABCUT_MODES:
+            if event.button() == Qt.MouseButton.LeftButton:
+                mx, my = self._widget_to_mask(event.position())
+                if mx is not None:
+                    self._rect_start = (mx, my)
+                    self._rect_end = (mx, my)
+                    self._rect_dragging = True
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._image_bgr is None:
@@ -375,6 +441,14 @@ class ImageCanvas(QWidget):
             self._rect_dragging = False
             self.update()
 
+        elif self._edit_mode in _GRABCUT_MODES:
+            if self._rect_dragging and self._rect_start and self._rect_end:
+                self._run_grabcut_preview()
+            self._rect_start = None
+            self._rect_end = None
+            self._rect_dragging = False
+            self.update()
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         delta = event.angleDelta().y()
         factor = 1.15 if delta > 0 else (1.0 / 1.15)
@@ -404,6 +478,15 @@ class ImageCanvas(QWidget):
         if key == Qt.Key.Key_Minus:
             self.set_brush_radius(self._brush_radius - 5)
             return
+
+        # GrabCutモード中はEnter/EscをGrabCut処理に使う (ポリゴンより優先)
+        if mode in _GRABCUT_MODES:
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.apply_grabcut_preview()
+                return
+            if key == Qt.Key.Key_Escape:
+                self.cancel_grabcut_preview()
+                return
 
         if mode in (EditMode.POLY_ADD, EditMode.POLY_DEL):
             if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
@@ -453,6 +536,108 @@ class ImageCanvas(QWidget):
         cv2.fillPoly(self._editor.mask, [pts], color)
         self._poly_points.clear()
         self.mask_changed.emit()
+        self.update()
+
+    # ------------------------------------------------------------------ #
+    # GrabCut処理
+    # ------------------------------------------------------------------ #
+
+    def _run_grabcut_preview(self) -> None:
+        """矩形ドラッグ後にGrabCutを実行してプレビュー状態にする"""
+        if self._editor is None or self._image_bgr is None:
+            return
+        if self._rect_start is None or self._rect_end is None:
+            return
+
+        x0, y0 = self._rect_start
+        x1, y1 = self._rect_end
+        lx, rx = min(x0, x1), max(x0, x1)
+        ty, by = min(y0, y1), max(y0, y1)
+
+        ih, iw = self._image_bgr.shape[:2]
+        lx = max(0, lx)
+        ty = max(0, ty)
+        rx = min(rx, iw)
+        by = min(by, ih)
+
+        rw, rh = rx - lx, by - ty
+        if rw < 4 or rh < 4:
+            self.status_message.emit("矩形が小さすぎます。広めに指定してください。", 4000)
+            return
+
+        mode_map = {
+            EditMode.GRABCUT_ADD:     "add",
+            EditMode.GRABCUT_DEL:     "remove",
+            EditMode.GRABCUT_REPLACE: "replace",
+        }
+        mode_str = mode_map[self._edit_mode]
+
+        try:
+            from core.grabcut_tool import run_grabcut_with_rect
+            gc_mask = run_grabcut_with_rect(
+                self._image_bgr, (lx, ty, rw, rh), self._grabcut_iter_count
+            )
+            self._grabcut_preview_mask = gc_mask
+            self._grabcut_preview_mode = mode_str
+            self._grabcut_rect = (lx, ty, rw, rh)
+            self.status_message.emit("GrabCutプレビュー中: Enter=適用 / Esc=キャンセル", 0)
+        except Exception as e:
+            self.status_message.emit(
+                f"GrabCutに失敗しました。矩形範囲を広めに指定してください。({e})", 5000
+            )
+            self._grabcut_preview_mask = None
+            self._grabcut_preview_mode = None
+
+        self.update()
+
+    def apply_grabcut_preview(self) -> None:
+        """
+        プレビュー中のGrabCut結果を現在マスクへ適用する。
+        適用前に begin_stroke() を呼び、Undo可能にする。
+        適用後は mask_changed をemitし、プレビューをクリアする。
+        """
+        if self._grabcut_preview_mask is None or self._editor is None:
+            return
+        if self._grabcut_preview_mode is None:
+            return
+
+        from core.grabcut_tool import apply_grabcut_result
+
+        gc_mask = self._grabcut_preview_mask.copy()
+
+        # 後処理 (膨張・収縮)
+        ks = self._grabcut_post_kernel_size
+        if self._grabcut_post_dilate:
+            from core.mask_morphology import dilate_mask
+            gc_mask = dilate_mask(gc_mask, ks)
+        if self._grabcut_post_erode:
+            from core.mask_morphology import erode_mask
+            gc_mask = erode_mask(gc_mask, ks)
+
+        self._editor.begin_stroke()
+        new_mask = apply_grabcut_result(
+            self._editor.mask, gc_mask, self._grabcut_preview_mode
+        )
+        self._editor.mask[:] = new_mask
+
+        self._grabcut_preview_mask = None
+        self._grabcut_preview_mode = None
+        self._grabcut_rect = None
+
+        self.mask_changed.emit()
+        self.status_message.emit("GrabCutを適用しました", 3000)
+        self.update()
+
+    def cancel_grabcut_preview(self) -> None:
+        """
+        GrabCutプレビューを破棄する。Undo履歴は増やさない。
+        """
+        if self._grabcut_preview_mask is None:
+            return
+        self._grabcut_preview_mask = None
+        self._grabcut_preview_mode = None
+        self._grabcut_rect = None
+        self.status_message.emit("GrabCutをキャンセルしました", 2000)
         self.update()
 
     # ------------------------------------------------------------------ #
@@ -508,6 +693,10 @@ class ImageCanvas(QWidget):
         self._rect_dragging = False
         self._painting = False
         self._stroke_started = False
+        # GrabCutプレビューもクリア
+        self._grabcut_preview_mask = None
+        self._grabcut_preview_mode = None
+        self._grabcut_rect = None
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         if self._image_bgr is not None:
