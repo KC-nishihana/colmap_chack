@@ -1,15 +1,17 @@
 """
 メインウィンドウ: 全パネルの配置・操作統括・ショートカット・保存・ログ
+v0.4A.1: GrabCut Workerスレッド管理・プログレス表示・UI制御・大画像設定追加
 """
 
 import csv
 import datetime
+import logging
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QThread, Qt
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -19,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -43,19 +46,28 @@ from core.project_loader import ImageEntry, ProjectInfo, load_project
 from ui.image_canvas import EditMode, ImageCanvas
 from ui.image_list_panel import ImageListPanel
 
+_log = logging.getLogger(__name__)
+
 
 class MainWindow(QMainWindow):
     """アプリケーションのメインウィンドウ"""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("COLMAP Mask Editor v0.4A")
+        self.setWindowTitle("COLMAP Mask Editor v0.4A.1")
         self.resize(1440, 900)
 
         self._project: Optional[ProjectInfo] = None
         self._current_index: int = -1
         self._editor: Optional[MaskEditor] = None
         self._save_colmap: bool = False
+
+        # GrabCut Workerスレッド管理
+        self._grabcut_thread: Optional[QThread] = None
+        self._grabcut_worker = None           # GrabCutWorker (型循環回避)
+        self._grabcut_request_id: int = 0    # リクエストID (インクリメント)
+        self._grabcut_pending_mode: str = "add"
+        self._grabcut_progress_dlg: Optional[QProgressDialog] = None
 
         self._setup_menu()
         self._setup_central()
@@ -72,19 +84,19 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("ファイル(&F)")
 
-        open_act = QAction("プロジェクトを開く(&O)...", self)
-        open_act.setShortcut(QKeySequence("Ctrl+O"))
-        open_act.triggered.connect(self._open_project)
-        file_menu.addAction(open_act)
+        self._act_open = QAction("プロジェクトを開く(&O)...", self)
+        self._act_open.setShortcut(QKeySequence("Ctrl+O"))
+        self._act_open.triggered.connect(self._open_project)
+        file_menu.addAction(self._act_open)
 
-        save_act = QAction("保存(&S)", self)
-        save_act.setShortcut(QKeySequence("Ctrl+S"))
-        save_act.triggered.connect(self._save_current)
-        file_menu.addAction(save_act)
+        self._act_save = QAction("保存(&S)", self)
+        self._act_save.setShortcut(QKeySequence("Ctrl+S"))
+        self._act_save.triggered.connect(self._save_current)
+        file_menu.addAction(self._act_save)
 
-        save_all_act = QAction("すべて保存(&A)", self)
-        save_all_act.triggered.connect(self._save_all)
-        file_menu.addAction(save_all_act)
+        self._act_save_all = QAction("すべて保存(&A)", self)
+        self._act_save_all.triggered.connect(self._save_all)
+        file_menu.addAction(self._act_save_all)
 
         file_menu.addSeparator()
 
@@ -108,6 +120,8 @@ class MainWindow(QMainWindow):
         self._canvas.mask_changed.connect(self._on_mask_changed)
         self._canvas.mode_changed.connect(self._on_mode_changed)
         self._canvas.status_message.connect(self._on_canvas_status_message)
+        self._canvas.grabcut_requested.connect(self._on_grabcut_requested)
+        self._canvas.grabcut_cancel_requested.connect(self._cancel_grabcut)
         splitter.addWidget(self._canvas)
 
         # 右: コントロールパネル
@@ -159,8 +173,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(mode_group)
 
         # ----- GrabCut設定 -----
-        grabcut_group = QGroupBox("GrabCut設定")
-        grabcut_layout = QVBoxLayout(grabcut_group)
+        self._grabcut_group = QGroupBox("GrabCut設定")
+        grabcut_layout = QVBoxLayout(self._grabcut_group)
 
         grabcut_layout.addWidget(QLabel("反復回数 (1〜20):"))
         self._grabcut_iter_spin = QSpinBox()
@@ -188,7 +202,27 @@ class MainWindow(QMainWindow):
         self._grabcut_post_kernel_spin.valueChanged.connect(self._canvas.set_grabcut_post_kernel_size)
         grabcut_layout.addWidget(self._grabcut_post_kernel_spin)
 
-        layout.addWidget(grabcut_group)
+        # 大画像設定
+        grabcut_layout.addWidget(QLabel("─── 大画像最適化 ───"))
+        self._grabcut_use_downscale_cb = QCheckBox("大画像を縮小して処理する")
+        self._grabcut_use_downscale_cb.setChecked(True)
+        self._grabcut_use_downscale_cb.setToolTip(
+            "ONにすると大きな画像をROI切り出し+縮小してGrabCutを実行します。\n"
+            "処理が速くなり、メモリ使用量も減ります。"
+        )
+        self._grabcut_use_downscale_cb.toggled.connect(self._canvas.set_grabcut_use_downscale)
+        grabcut_layout.addWidget(self._grabcut_use_downscale_cb)
+
+        grabcut_layout.addWidget(QLabel("GrabCut最大処理サイズ (px):"))
+        self._grabcut_max_size_spin = QSpinBox()
+        self._grabcut_max_size_spin.setRange(512, 4096)
+        self._grabcut_max_size_spin.setValue(2048)
+        self._grabcut_max_size_spin.setSingleStep(256)
+        self._grabcut_max_size_spin.setToolTip("ROIの長辺がこのサイズを超えたら縮小して処理します")
+        self._grabcut_max_size_spin.valueChanged.connect(self._canvas.set_grabcut_max_processing_size)
+        grabcut_layout.addWidget(self._grabcut_max_size_spin)
+
+        layout.addWidget(self._grabcut_group)
 
         # ----- 差分表示 -----
         diff_group = QGroupBox("差分表示")
@@ -255,7 +289,6 @@ class MainWindow(QMainWindow):
         erode_row.addWidget(btn_e3)
         morph_layout.addLayout(erode_row)
 
-        # 穴埋め
         morph_layout.addWidget(QLabel("穴埋めカーネルサイズ:"))
         close_row = QHBoxLayout()
         self._close_kernel_spin = QSpinBox()
@@ -299,26 +332,26 @@ class MainWindow(QMainWindow):
         nav_group = QGroupBox("操作")
         nav_layout = QVBoxLayout(nav_group)
 
-        btn_prev = QPushButton("← 前の画像 [A]")
-        btn_prev.clicked.connect(self._prev_image)
-        nav_layout.addWidget(btn_prev)
+        self._btn_prev = QPushButton("← 前の画像 [A]")
+        self._btn_prev.clicked.connect(self._prev_image)
+        nav_layout.addWidget(self._btn_prev)
 
-        btn_next = QPushButton("次の画像 → [D]")
-        btn_next.clicked.connect(self._next_image)
-        nav_layout.addWidget(btn_next)
+        self._btn_next = QPushButton("次の画像 → [D]")
+        self._btn_next.clicked.connect(self._next_image)
+        nav_layout.addWidget(self._btn_next)
 
-        btn_save = QPushButton("保存 [S / Ctrl+S]")
-        btn_save.setStyleSheet("QPushButton { background: #2a6; color: white; font-weight: bold; }")
-        btn_save.clicked.connect(self._save_current)
-        nav_layout.addWidget(btn_save)
+        self._btn_save = QPushButton("保存 [S / Ctrl+S]")
+        self._btn_save.setStyleSheet("QPushButton { background: #2a6; color: white; font-weight: bold; }")
+        self._btn_save.clicked.connect(self._save_current)
+        nav_layout.addWidget(self._btn_save)
 
-        btn_undo = QPushButton("元に戻す [Z / Ctrl+Z]")
-        btn_undo.clicked.connect(self._undo)
-        nav_layout.addWidget(btn_undo)
+        self._btn_undo = QPushButton("元に戻す [Z / Ctrl+Z]")
+        self._btn_undo.clicked.connect(self._undo)
+        nav_layout.addWidget(self._btn_undo)
 
-        btn_redo = QPushButton("やり直し [Ctrl+Y]")
-        btn_redo.clicked.connect(self._redo)
-        nav_layout.addWidget(btn_redo)
+        self._btn_redo = QPushButton("やり直し [Ctrl+Y]")
+        self._btn_redo.clicked.connect(self._redo)
+        nav_layout.addWidget(self._btn_redo)
 
         btn_resize = QPushButton("画像サイズに合わせてリサイズ")
         btn_resize.clicked.connect(self._resize_mask_to_image)
@@ -436,14 +469,12 @@ class MainWindow(QMainWindow):
             ("+",         self._brush_increase),
             ("=",         self._brush_increase),
             ("-",         self._brush_decrease),
-            # V0.3 新規
             ("B",         lambda: self._set_mode(EditMode.BRUSH)),
             ("R",         lambda: self._set_mode(EditMode.RECT_ADD)),
             ("Shift+R",   lambda: self._set_mode(EditMode.RECT_DEL)),
             ("P",         lambda: self._set_mode(EditMode.POLY_ADD)),
             ("Shift+P",   lambda: self._set_mode(EditMode.POLY_DEL)),
             ("F",         self._toggle_diff),
-            # V0.4A GrabCut
             ("G",         lambda: self._set_mode(EditMode.GRABCUT_ADD)),
             ("Shift+G",   lambda: self._set_mode(EditMode.GRABCUT_DEL)),
             ("Ctrl+G",    lambda: self._set_mode(EditMode.GRABCUT_REPLACE)),
@@ -544,7 +575,179 @@ class MainWindow(QMainWindow):
 
     def _update_title(self, entry: ImageEntry) -> None:
         modified = " *" if entry.is_modified else ""
-        self.setWindowTitle(f"COLMAP Mask Editor v0.4A - {entry.rel_path}{modified}")
+        self.setWindowTitle(f"COLMAP Mask Editor v0.4A.1 - {entry.rel_path}{modified}")
+
+    # ------------------------------------------------------------------ #
+    # GrabCut Worker管理
+    # ------------------------------------------------------------------ #
+
+    def _on_grabcut_requested(self, info: dict) -> None:
+        """キャンバスからGrabCutリクエストを受け取り、Workerスレッドを起動する。"""
+        from core.grabcut_tool import GrabCutOptions
+        from core.grabcut_worker import GrabCutWorker
+
+        # 既存ワーカーが残っていればキャンセル
+        if self._grabcut_worker is not None:
+            self._grabcut_worker.request_cancel()
+            self._cleanup_grabcut_worker()
+
+        self._grabcut_request_id += 1
+        request_id = self._grabcut_request_id
+        self._grabcut_pending_mode = info["mode"]
+
+        image: np.ndarray = info["image"]
+        rect: tuple = info["rect"]
+        options: GrabCutOptions = info["options"]
+
+        _log.info(
+            "GrabCutリクエスト受信: request_id=%d, rect=%s, mode=%s",
+            request_id, rect, info["mode"],
+        )
+
+        worker = GrabCutWorker(image, rect, options, request_id)
+        thread = QThread(self)
+
+        req_id = request_id
+
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda r, rid=req_id: self._on_grabcut_finished(r, rid))
+        worker.failed.connect(lambda msg, rid=req_id: self._on_grabcut_failed(msg, rid))
+        worker.cancelled.connect(lambda rid=req_id: self._on_grabcut_cancelled(rid))
+        worker.progress.connect(self._on_grabcut_progress)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.cancelled.connect(thread.quit)
+
+        self._grabcut_worker = worker
+        self._grabcut_thread = thread
+
+        self._set_grabcut_ui_locked(True)
+        self._show_grabcut_progress()
+
+        thread.start()
+
+    def _on_grabcut_finished(self, result: object, request_id: int) -> None:
+        """Worker正常完了。リクエストIDが一致する場合のみプレビューに反映する。"""
+        from core.grabcut_tool import GrabCutResult
+
+        self._hide_grabcut_progress()
+        self._set_grabcut_ui_locked(False)
+        self._cleanup_grabcut_worker()
+
+        if request_id != self._grabcut_request_id:
+            _log.info("古いGrabCut結果を破棄 (request_id=%d, current=%d)",
+                      request_id, self._grabcut_request_id)
+            self._canvas.clear_grabcut_state()
+            return
+
+        gc_result: GrabCutResult = result
+        self._canvas.set_grabcut_preview(gc_result.mask, self._grabcut_pending_mode)
+
+        iw, ih = gc_result.original_size
+        roi_x, roi_y, roi_w, roi_h = gc_result.roi
+        pw, ph = gc_result.processing_size
+        elapsed = gc_result.processing_time_sec
+        scale = gc_result.scale
+
+        status = (
+            f"GrabCut完了: 元画像 {iw}x{ih} | "
+            f"ROI {roi_w}x{roi_h} | "
+            f"処理 {pw}x{ph} | "
+            f"縮小率 {scale:.3f} | "
+            f"処理時間 {elapsed:.2f}秒"
+        )
+        self.statusBar().showMessage(status, 8000)
+        _log.info(status)
+
+    def _on_grabcut_failed(self, message: str, request_id: int) -> None:
+        """Workerエラー。UIを復元してエラーを表示する。"""
+        self._hide_grabcut_progress()
+        self._set_grabcut_ui_locked(False)
+        self._canvas.clear_grabcut_state()
+        self._cleanup_grabcut_worker()
+
+        if request_id != self._grabcut_request_id:
+            return  # 古いリクエストのエラーは無視
+
+        _log.warning("GrabCutエラー: %s", message)
+        QMessageBox.warning(self, "GrabCutエラー", message)
+
+    def _on_grabcut_cancelled(self, request_id: int) -> None:
+        """Workerキャンセル完了。UIを復元する。"""
+        self._hide_grabcut_progress()
+        self._set_grabcut_ui_locked(False)
+        self._canvas.clear_grabcut_state()
+        self._cleanup_grabcut_worker()
+
+        if request_id == self._grabcut_request_id:
+            self.statusBar().showMessage("GrabCutをキャンセルしました", 3000)
+
+    def _on_grabcut_progress(self, message: str) -> None:
+        """Worker進捗メッセージ。プログレスダイアログのラベルを更新する。"""
+        if self._grabcut_progress_dlg is not None:
+            self._grabcut_progress_dlg.setLabelText(f"GrabCut処理中...\n{message}")
+        self.statusBar().showMessage(message)
+
+    def _cancel_grabcut(self) -> None:
+        """GrabCut処理のキャンセルを要求する。"""
+        if self._grabcut_worker is not None:
+            _log.info("GrabCutキャンセル要求")
+            self._grabcut_worker.request_cancel()
+
+    def _cleanup_grabcut_worker(self) -> None:
+        """ワーカーとスレッドを安全に破棄する。"""
+        if self._grabcut_thread is not None:
+            if self._grabcut_thread.isRunning():
+                self._grabcut_thread.quit()
+                self._grabcut_thread.wait(3000)
+            self._grabcut_thread = None
+        self._grabcut_worker = None
+
+    def _set_grabcut_ui_locked(self, locked: bool) -> None:
+        """GrabCut処理中に操作を制限/解除する。"""
+        enabled = not locked
+        for rb in self._mode_btns.values():
+            rb.setEnabled(enabled)
+        self._grabcut_group.setEnabled(enabled)
+        self._btn_prev.setEnabled(enabled)
+        self._btn_next.setEnabled(enabled)
+        self._btn_save.setEnabled(enabled)
+        self._btn_undo.setEnabled(enabled)
+        self._btn_redo.setEnabled(enabled)
+        self._act_open.setEnabled(enabled)
+        self._act_save.setEnabled(enabled)
+        self._act_save_all.setEnabled(enabled)
+
+    def _show_grabcut_progress(self) -> None:
+        dlg = QProgressDialog("GrabCut処理中...", "キャンセル", 0, 0, self)
+        dlg.setWindowTitle("GrabCut")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setRange(0, 0)
+        dlg.canceled.connect(self._cancel_grabcut)
+        dlg.show()
+        self._grabcut_progress_dlg = dlg
+
+    def _hide_grabcut_progress(self) -> None:
+        if self._grabcut_progress_dlg is not None:
+            try:
+                self._grabcut_progress_dlg.canceled.disconnect()
+            except RuntimeError:
+                pass
+            self._grabcut_progress_dlg.close()
+            self._grabcut_progress_dlg = None
+
+    # ------------------------------------------------------------------ #
+    # ウィンドウクローズ
+    # ------------------------------------------------------------------ #
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._grabcut_worker is not None:
+            _log.info("ウィンドウクローズ: GrabCutワーカーを停止します")
+            self._grabcut_worker.request_cancel()
+            self._cleanup_grabcut_worker()
+        event.accept()
 
     # ------------------------------------------------------------------ #
     # マスク統計パネル
@@ -677,7 +880,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _apply_morphology(self, new_mask: np.ndarray) -> None:
-        """モルフォロジー結果を editor に反映（Undoスタックは呼び出し元で積む）"""
         if self._editor is None:
             return
         self._editor.mask[:] = new_mask
@@ -877,7 +1079,7 @@ class MainWindow(QMainWindow):
                     writer.writeheader()
                 writer.writerow(row)
         except Exception as e:
-            print(f"[WARN] ログ書き込みエラー: {e}")
+            _log.warning("ログ書き込みエラー: %s", e)
 
     # ------------------------------------------------------------------ #
     # 一括チェック

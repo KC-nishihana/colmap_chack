@@ -1,5 +1,6 @@
 """
 中央キャンバス: 画像表示・マスク半透明重ね・ブラシ/矩形/ポリゴン/GrabCut編集・差分表示・ズーム・パン
+v0.4A.1: GrabCut処理をシグナルで委譲し、処理中フラグで二重起動を防止
 """
 
 from enum import Enum, auto
@@ -57,8 +58,15 @@ class ImageCanvas(QWidget):
     """
 
     mask_changed = Signal()
-    mode_changed = Signal(str)   # 編集モード名
-    status_message = Signal(str, int)  # メッセージ, タイムアウトms (0=持続)
+    mode_changed = Signal(str)           # 編集モード名
+    status_message = Signal(str, int)    # メッセージ, タイムアウトms (0=持続)
+
+    # GrabCut処理をメインウィンドウ側へ委譲するシグナル
+    # dict: {"image": ndarray, "rect": tuple, "mode": str, "options": GrabCutOptions}
+    grabcut_requested = Signal(object)
+
+    # キャンセル要求 (処理中にEscを押した場合)
+    grabcut_cancel_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -109,11 +117,16 @@ class ImageCanvas(QWidget):
         self._grabcut_post_dilate: bool = False
         self._grabcut_post_erode: bool = False
         self._grabcut_post_kernel_size: int = 3
+        self._grabcut_use_downscale: bool = True
+        self._grabcut_max_processing_size: int = 2048
 
         # GrabCutプレビュー状態
         self._grabcut_preview_mask: Optional[np.ndarray] = None
         self._grabcut_preview_mode: Optional[str] = None
         self._grabcut_rect: Optional[tuple[int, int, int, int]] = None
+
+        # GrabCut処理中フラグ (二重起動防止)
+        self._grabcut_processing: bool = False
 
         self.setMinimumSize(400, 300)
 
@@ -188,6 +201,36 @@ class ImageCanvas(QWidget):
 
     def set_grabcut_post_kernel_size(self, value: int) -> None:
         self._grabcut_post_kernel_size = max(1, min(15, value))
+
+    def set_grabcut_use_downscale(self, enabled: bool) -> None:
+        self._grabcut_use_downscale = enabled
+
+    def set_grabcut_max_processing_size(self, value: int) -> None:
+        self._grabcut_max_processing_size = max(512, min(4096, value))
+
+    # ----- GrabCut状態 (読み取り) -----
+
+    @property
+    def grabcut_processing(self) -> bool:
+        return self._grabcut_processing
+
+    # ----- GrabCutプレビューのセット/クリア (Workerから呼ばれる) -----
+
+    def set_grabcut_preview(self, mask: np.ndarray, mode_str: str) -> None:
+        """Worker処理完了後にメインウィンドウから呼ばれてプレビューをセットする。"""
+        self._grabcut_preview_mask = mask
+        self._grabcut_preview_mode = mode_str
+        self._grabcut_processing = False
+        self.status_message.emit("GrabCutプレビュー中: Enter=適用 / Esc=キャンセル", 0)
+        self.update()
+
+    def clear_grabcut_state(self) -> None:
+        """エラー・キャンセル時にプレビューと処理フラグをクリアする。"""
+        self._grabcut_preview_mask = None
+        self._grabcut_preview_mode = None
+        self._grabcut_rect = None
+        self._grabcut_processing = False
+        self.update()
 
     # ------------------------------------------------------------------ #
     # 描画
@@ -270,6 +313,13 @@ class ImageCanvas(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             for px, py in pts_w:
                 painter.drawEllipse(QPoint(px, py), 4, 4)
+            painter.restore()
+
+        # 処理中インジケーター
+        if self._grabcut_processing:
+            painter.save()
+            painter.setPen(QColor(255, 200, 0))
+            painter.drawText(10, 20, "GrabCut処理中...")
             painter.restore()
 
     def _build_composite(self) -> np.ndarray:
@@ -443,7 +493,7 @@ class ImageCanvas(QWidget):
 
         elif self._edit_mode in _GRABCUT_MODES:
             if self._rect_dragging and self._rect_start and self._rect_end:
-                self._run_grabcut_preview()
+                self._request_grabcut_preview()
             self._rect_start = None
             self._rect_end = None
             self._rect_dragging = False
@@ -482,10 +532,14 @@ class ImageCanvas(QWidget):
         # GrabCutモード中はEnter/EscをGrabCut処理に使う (ポリゴンより優先)
         if mode in _GRABCUT_MODES:
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self.apply_grabcut_preview()
+                if not self._grabcut_processing:
+                    self.apply_grabcut_preview()
                 return
             if key == Qt.Key.Key_Escape:
-                self.cancel_grabcut_preview()
+                if self._grabcut_processing:
+                    self.grabcut_cancel_requested.emit()
+                else:
+                    self.cancel_grabcut_preview()
                 return
 
         if mode in (EditMode.POLY_ADD, EditMode.POLY_DEL):
@@ -539,14 +593,21 @@ class ImageCanvas(QWidget):
         self.update()
 
     # ------------------------------------------------------------------ #
-    # GrabCut処理
+    # GrabCut処理 (シグナル委譲)
     # ------------------------------------------------------------------ #
 
-    def _run_grabcut_preview(self) -> None:
-        """矩形ドラッグ後にGrabCutを実行してプレビュー状態にする"""
+    def _request_grabcut_preview(self) -> None:
+        """
+        矩形ドラッグ後にGrabCutリクエストをシグナルでメインウィンドウへ送る。
+        実際の処理はワーカースレッドで行われる。
+        """
         if self._editor is None or self._image_bgr is None:
             return
         if self._rect_start is None or self._rect_end is None:
+            return
+
+        if self._grabcut_processing:
+            self.status_message.emit("GrabCut処理中です。完了をお待ちください。", 3000)
             return
 
         x0, y0 = self._rect_start
@@ -572,29 +633,30 @@ class ImageCanvas(QWidget):
         }
         mode_str = mode_map[self._edit_mode]
 
-        try:
-            from core.grabcut_tool import run_grabcut_with_rect
-            gc_mask = run_grabcut_with_rect(
-                self._image_bgr, (lx, ty, rw, rh), self._grabcut_iter_count
-            )
-            self._grabcut_preview_mask = gc_mask
-            self._grabcut_preview_mode = mode_str
-            self._grabcut_rect = (lx, ty, rw, rh)
-            self.status_message.emit("GrabCutプレビュー中: Enter=適用 / Esc=キャンセル", 0)
-        except Exception as e:
-            self.status_message.emit(
-                f"GrabCutに失敗しました。矩形範囲を広めに指定してください。({e})", 5000
-            )
-            self._grabcut_preview_mask = None
-            self._grabcut_preview_mode = None
+        from core.grabcut_tool import GrabCutOptions
+        options = GrabCutOptions(
+            iter_count=self._grabcut_iter_count,
+            use_downscale=self._grabcut_use_downscale,
+            max_processing_size=self._grabcut_max_processing_size,
+        )
 
+        self._grabcut_processing = True
+        self._grabcut_preview_mode = mode_str
+        self._grabcut_rect = (lx, ty, rw, rh)
+
+        self.grabcut_requested.emit({
+            "image": self._image_bgr.copy(),
+            "rect": (lx, ty, rw, rh),
+            "mode": mode_str,
+            "options": options,
+        })
+        self.status_message.emit("GrabCut処理中...", 0)
         self.update()
 
     def apply_grabcut_preview(self) -> None:
         """
         プレビュー中のGrabCut結果を現在マスクへ適用する。
         適用前に begin_stroke() を呼び、Undo可能にする。
-        適用後は mask_changed をemitし、プレビューをクリアする。
         """
         if self._grabcut_preview_mask is None or self._editor is None:
             return
@@ -629,9 +691,7 @@ class ImageCanvas(QWidget):
         self.update()
 
     def cancel_grabcut_preview(self) -> None:
-        """
-        GrabCutプレビューを破棄する。Undo履歴は増やさない。
-        """
+        """GrabCutプレビューを破棄する。Undo履歴は増やさない。"""
         if self._grabcut_preview_mask is None:
             return
         self._grabcut_preview_mask = None
@@ -693,10 +753,10 @@ class ImageCanvas(QWidget):
         self._rect_dragging = False
         self._painting = False
         self._stroke_started = False
-        # GrabCutプレビューもクリア
         self._grabcut_preview_mask = None
         self._grabcut_preview_mode = None
         self._grabcut_rect = None
+        # _grabcut_processing はワーカーライフサイクルで管理するためここでは触らない
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         if self._image_bgr is not None:
