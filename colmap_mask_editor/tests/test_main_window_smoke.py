@@ -1,5 +1,5 @@
 """
-MainWindow GUIスモークテスト (v0.4A.1)
+MainWindow GUIスモークテスト (v0.5.1)
 
 実画像ファイルやCOLMAPプロジェクトに依存せず、
 ウィンドウの生成・初期値・クローズのみを確認する。
@@ -8,6 +8,7 @@ MainWindow GUIスモークテスト (v0.4A.1)
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from core.version import APP_DISPLAY_NAME, APP_VERSION
 from ui.main_window import MainWindow
 
 
@@ -66,10 +67,10 @@ def test_window_closes_without_error(qtbot):
 
 
 def test_window_title_contains_version(qtbot):
-    """タイトルにバージョン番号が含まれる"""
+    """タイトルに APP_DISPLAY_NAME が含まれる"""
     win = MainWindow()
     qtbot.addWidget(win)
-    assert "v0.5" in win.windowTitle()
+    assert APP_DISPLAY_NAME in win.windowTitle()
 
 
 def test_canvas_exists(qtbot):

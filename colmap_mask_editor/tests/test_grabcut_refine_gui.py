@@ -278,11 +278,12 @@ def test_hint_radius_slider_spin_sync(qtbot):
 # window title がバージョン表記を含むこと
 # ------------------------------------------------------------------ #
 
-def test_window_title_contains_v04b(qtbot):
-    """ウィンドウタイトルにv0.5が含まれる"""
+def test_window_title_contains_version(qtbot):
+    """ウィンドウタイトルに APP_DISPLAY_NAME が含まれる"""
+    from core.version import APP_DISPLAY_NAME
     win = MainWindow()
     qtbot.addWidget(win)
-    assert "v0.5" in win.windowTitle()
+    assert APP_DISPLAY_NAME in win.windowTitle()
 
 
 # ------------------------------------------------------------------ #

@@ -1,9 +1,10 @@
-# COLMAP Mask Editor v0.4B
+# COLMAP Mask Editor v0.5.1
 
 COLMAP形式のプロジェクトに対応した、マスク画像の手動確認・修正GUIツールです。  
 v0.4A では **GrabCutによる半自動マスク生成機能** を追加しました。  
 v0.4A.1 では **大画像対応・GUIスレッド分離・例外処理強化・テスト追加** を行いました。  
-v0.4B では **GrabCut再推定（対象/背景ヒント描画でGrabCutを繰り返し改善）** を追加しました。
+v0.4B・v0.5 では **GrabCut再推定・ヒント描画・補正UI** を追加しました。  
+v0.5.1 では **UI整理（3タブ化）・QSettings設定保存・未確定GrabCut保護・安定性向上** を行いました。
 
 ## 動作環境
 
@@ -103,11 +104,66 @@ project/
 
 ---
 
-## 右パネルの機能（v0.4B）
+## 右パネルの構成（v0.5.1）
+
+右パネルは **3つのタブ** で構成されています。タブ下部のナビゲーションボタン（前の画像・次の画像・保存・Undo/Redo）は常に表示されます。
+
+| タブ | 内容 |
+|------|------|
+| **編集** | 編集モード選択、ブラシ設定、マスク表示、差分表示、モルフォロジー処理、小領域除去 |
+| **GrabCut** | GrabCut設定、補正（ヒント描画・再推定）、GCステータス表示 |
+| **保存・確認** | 保存設定、品質チェック、COLMAP互換出力、統計表示 |
+
+GrabCut系モード（G / Shift+G / Ctrl+G）を選択すると **GrabCutタブ** へ、通常編集モードを選択すると **編集タブ** へ自動切り替わります。
+
+---
+
+## 設定の自動保存（v0.5.1）
+
+アプリ終了時に以下の設定が自動保存され、次回起動時に復元されます。
+
+| 設定項目 | 内容 |
+|----------|------|
+| ウィンドウ位置・サイズ | 起動時に前回の位置を復元 |
+| スプリッタ位置 | 左ペイン・中央・右パネルの幅比率 |
+| 右パネルタブ番号 | 前回選択していたタブ |
+| ブラシサイズ | 前回のブラシサイズ |
+| GrabCut設定 | 反復回数・大画像縮小・最大処理サイズ・後処理オプション |
+| 最後に開いたフォルダ | ファイルダイアログの初期フォルダ |
+
+**ヘルプ > 設定を初期化** ですべての設定を工場出荷状態に戻せます。
+
+---
+
+## 未確定状態の保護（v0.5.1）
+
+### GrabCut未確定セッションの保護
+
+GrabCutプレビュー表示中・ヒント編集中に他の画像へ移動しようとすると、3択ダイアログが表示されます。
+
+| 選択肢 | 動作 |
+|--------|------|
+| 適用 | 現在のGrabCutプレビューをマスクに確定してから移動 |
+| 破棄 | GrabCutプレビューを破棄して移動 |
+| キャンセル | 移動を中止してGrabCutを継続 |
+
+### 未保存マスクの確認
+
+未保存のマスク編集がある状態で他の画像に移動しようとすると、3択ダイアログが表示されます。
+
+| 選択肢 | 動作 |
+|--------|------|
+| 保存 | マスクを保存してから移動 |
+| 破棄 | 編集を破棄して移動 |
+| キャンセル | 移動を中止して編集を継続 |
+
+---
+
+## 右パネルの機能詳細
 
 ### 編集モード
 
-右パネル上部でモードを選択します。現在のモードはステータスバーにも表示されます。
+右パネルの「編集」タブでモードを選択します。現在のモードはステータスバーにも表示されます。
 
 | モード | ショートカット | 操作 |
 |--------|--------------|------|
@@ -123,7 +179,7 @@ project/
 
 ---
 
-## GrabCut機能（v0.4B）
+## GrabCut機能
 
 ### 概要
 
@@ -433,6 +489,8 @@ colmap_mask_editor/
 ├─ logs/                          アプリケーションログ（自動生成）
 │  └─ colmap_mask_editor.log
 ├─ core/
+│  ├─ version.py                  バージョン定数（APP_VERSION等）（v0.5.1追加）
+│  ├─ app_settings.py             QSettings設定保存・読み込み（v0.5.1追加）
 │  ├─ project_loader.py           プロジェクト構造解析・全画像スキャン
 │  ├─ colmap_images_txt.py        images.txt パーサ
 │  ├─ mask_io.py                  マスク読み書き・パス解決
@@ -440,28 +498,35 @@ colmap_mask_editor/
 │  ├─ mask_checker.py             品質チェック・ステータス判定
 │  ├─ colmap_export.py            COLMAP互換マスク一括出力
 │  ├─ check_log.py                チェックログCSV出力
-│  ├─ mask_morphology.py          膨張・収縮・穴埋め（v0.3追加）
-│  ├─ mask_components.py          小領域除去（v0.3追加）
-│  ├─ grabcut_tool.py             GrabCutSession・HintStroke・create/apply/refine（v0.4B更新）
-│  └─ grabcut_worker.py           GrabCutWorker INITIAL/REFINE両対応（v0.4B更新）
+│  ├─ mask_morphology.py          膨張・収縮・穴埋め
+│  ├─ mask_components.py          小領域除去
+│  ├─ grabcut_tool.py             GrabCutSession・HintStroke・create/apply/refine
+│  └─ grabcut_worker.py           GrabCutWorker INITIAL/REFINE両対応
 ├─ ui/
-│  ├─ main_window.py              メインウィンドウ・GrabCut補正UI・再推定ハンドラ（v0.4B更新）
-│  ├─ image_canvas.py             キャンバス・GrabCutUiState・ヒント描画（v0.4B更新）
+│  ├─ main_window.py              メインウィンドウ・3タブUI・設定保存・保護ダイアログ（v0.5.1更新）
+│  ├─ image_canvas.py             キャンバス・GrabCutUiState・ヒント描画
 │  └─ image_list_panel.py         画像一覧・フィルタ・ステータス表示
-└─ tests/                         自動テスト（139テスト）
-   ├─ test_grabcut_tool.py        GrabCutツール単体テスト
-   ├─ test_grabcut_large_image.py 大画像処理テスト
-   ├─ test_grabcut_worker.py      WorkerシグナルテストINITIAL/REFINE（v0.4B更新）
-   ├─ test_grabcut_session.py     GrabCutSession生成テスト（v0.4B追加）
-   ├─ test_grabcut_hints.py       ヒントストローク座標変換テスト（v0.4B追加）
-   ├─ test_grabcut_refine_worker.py REFINEタスクテスト（v0.4B追加）
-   ├─ test_grabcut_refine_gui.py  補正UIスモークテスト（v0.4B追加）
-   └─ test_main_window_smoke.py   GUIスモークテスト（v0.4B更新）
+├─ tests/                         自動テスト（155テスト）
+│  ├─ test_grabcut_tool.py        GrabCutツール単体テスト
+│  ├─ test_grabcut_large_image.py 大画像処理テスト
+│  ├─ test_grabcut_worker.py      WorkerシグナルテストINITIAL/REFINE
+│  ├─ test_grabcut_session.py     GrabCutSession生成テスト
+│  ├─ test_grabcut_hints.py       ヒントストローク座標変換テスト
+│  ├─ test_grabcut_refine_worker.py REFINEタスクテスト
+│  ├─ test_grabcut_refine_gui.py  補正UIスモークテスト
+│  ├─ test_main_window_smoke.py   GUIスモークテスト
+│  ├─ test_version.py             バージョン整合テスト（v0.5.1追加）
+│  ├─ test_app_settings.py        設定保存テスト（v0.5.1追加）
+│  ├─ test_right_panel_tabs.py    タブUI・自動切替テスト（v0.5.1追加）
+│  ├─ test_pending_state_guard.py 未確定状態確認テスト（v0.5.1追加）
+│  └─ test_grabcut_thread_integration.py QThread統合テスト（v0.5.1追加）
+└─ (tools/)
+   └─ benchmark_grabcut.py        4K/8K GrabCutベンチマーク（v0.5.1追加、tools/配下）
 ```
 
 ---
 
-## テスト実行（v0.4B）
+## テスト実行
 
 ```bash
 cd colmap_mask_editor
@@ -469,17 +534,30 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-実行結果例（全139テスト）:
+実行結果例（全155テスト）:
 
 ```
-tests/test_grabcut_tool.py          - apply_grabcut_result / 入力検証 / 戻り値仕様
-tests/test_grabcut_large_image.py   - ROI計算 / 縮小・復元 / 大画像統合
-tests/test_grabcut_worker.py        - INITIAL/REFINEシグナル / キャンセル / 例外処理
-tests/test_grabcut_session.py       - GrabCutSession構造 / ROI計算 / ラベル値検証
-tests/test_grabcut_hints.py         - ヒント座標変換 / FG/BG/消去 / ROI境界外無視
-tests/test_grabcut_refine_worker.py - GC_INIT_WITH_MASK / rect=None / 出力形状検証
-tests/test_grabcut_refine_gui.py    - 補正UI存在 / 有効無効切替 / ブラシサイズ同期
-tests/test_main_window_smoke.py     - ウィンドウ生成 / 初期値確認
+tests/test_grabcut_tool.py               - apply_grabcut_result / 入力検証 / 戻り値仕様
+tests/test_grabcut_large_image.py        - ROI計算 / 縮小・復元 / 大画像統合
+tests/test_grabcut_worker.py             - INITIAL/REFINEシグナル / キャンセル / 例外処理
+tests/test_grabcut_session.py            - GrabCutSession構造 / ROI計算 / ラベル値検証
+tests/test_grabcut_hints.py              - ヒント座標変換 / FG/BG/消去 / ROI境界外無視
+tests/test_grabcut_refine_worker.py      - GC_INIT_WITH_MASK / rect=None / 出力形状検証
+tests/test_grabcut_refine_gui.py         - 補正UI存在 / 有効無効切替 / ブラシサイズ同期
+tests/test_main_window_smoke.py          - ウィンドウ生成 / 初期値確認
+tests/test_version.py                    - バージョン文字列整合 / README確認（v0.5.1）
+tests/test_app_settings.py               - デフォルト値 / 保存・復元 / クランプ / リセット（v0.5.1）
+tests/test_right_panel_tabs.py           - タブ存在 / ラベル / 自動切替 / 設定復元（v0.5.1）
+tests/test_pending_state_guard.py        - GrabCut保護 / 未保存保護 / 3択動作（v0.5.1）
+tests/test_grabcut_thread_integration.py - QThread統合 / シグナル伝達 / 参照解放（v0.5.1）
+```
+
+### 4K/8K ベンチマーク
+
+```bash
+python tools/benchmark_grabcut.py
+python tools/benchmark_grabcut.py --only 4k --iter 2
+python tools/benchmark_grabcut.py --only 8k --no-downscale
 ```
 
 ---
@@ -498,6 +576,8 @@ tests/test_main_window_smoke.py     - ウィンドウ生成 / 初期値確認
 
 | バージョン | 内容 |
 |-----------|------|
+| v0.5.1 | UI整理（右パネル3タブ化）、QSettings設定自動保存・復元、GrabCut未確定セッション保護（3択ダイアログ）、未保存マスク確認改善、Worker終了処理強化（deferred close）、バージョン管理一元化（core/version.py）、新規テスト5本追加（合計155テスト）、4K/8Kベンチマークスクリプト追加 |
+| v0.5 | GrabCut補正UIのヒントボタンactive表示、GCステータスラベル追加、保存失敗通知、画像切替確認ダイアログ、統計表示デバウンス等9件のUI/UX改善 |
 | v0.4B | GrabCut再推定機能追加（対象/背景ヒント描画・GC_INIT_WITH_MASKによる繰り返し改善・ヒントUndo/Redo・既存マスクの背景制約オプション）、補正UI追加、テスト4本追加（合計139テスト） |
 | v0.4A.1 | 大画像対応（ROI切り出し・自動縮小・元解像度復元）、GrabCutのGUIスレッド分離、プログレス表示、キャンセル機能、処理中UI無効化、例外処理強化、自動テスト追加 |
 | v0.4A | GrabCutによる半自動マスク生成機能を追加（有効化・除外・置換の3モード、プレビュー表示、後処理オプション） |
