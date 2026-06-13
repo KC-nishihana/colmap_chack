@@ -611,13 +611,21 @@ class MainWindow(QMainWindow):
 
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(lambda r, rid=req_id: self._on_grabcut_finished(r, rid))
-        worker.failed.connect(lambda msg, rid=req_id: self._on_grabcut_failed(msg, rid))
-        worker.cancelled.connect(lambda rid=req_id: self._on_grabcut_cancelled(rid))
+        # QObject の bound method として接続することで、self (MainWindow) の
+        # スレッド所属がメインスレッドと判定され、自動的に Queued 接続になる。
+        # lambda/partial は thread affinity が不明で Direct 接続になる場合があるため使わない。
+        worker.finished.connect(self._on_worker_finished)
+        worker.failed.connect(self._on_worker_failed)
+        worker.cancelled.connect(self._on_worker_cancelled)
         worker.progress.connect(self._on_grabcut_progress)
+        # シグナル完了→スレッド終了→自動クリーンアップ (thread.wait() でブロックしない)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         worker.cancelled.connect(thread.quit)
+        thread.finished.connect(thread.deleteLater)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        worker.cancelled.connect(worker.deleteLater)
 
         self._grabcut_worker = worker
         self._grabcut_thread = thread
@@ -626,6 +634,40 @@ class MainWindow(QMainWindow):
         self._show_grabcut_progress()
 
         thread.start()
+
+    # ------------------------------------------------------------------
+    # Worker シグナルの受信スロット (lambda を避け bound method で定義)
+    # self が MainWindow (メインスレッド) のため Auto 接続が Queued になる
+    # ------------------------------------------------------------------
+
+    def _on_worker_finished(self) -> None:
+        """worker.finished を受信。sender() でワーカーを特定して結果を取得。"""
+        worker = self.sender()
+        try:
+            result = worker.result if worker is not None else None
+            request_id = worker.request_id if worker is not None else -1
+        except RuntimeError:
+            result = None
+            request_id = -1
+        self._on_grabcut_finished(result, request_id)
+
+    def _on_worker_failed(self, message: str) -> None:
+        """worker.failed を受信。"""
+        worker = self.sender()
+        try:
+            request_id = worker.request_id if worker is not None else self._grabcut_request_id
+        except RuntimeError:
+            request_id = self._grabcut_request_id
+        self._on_grabcut_failed(message, request_id)
+
+    def _on_worker_cancelled(self) -> None:
+        """worker.cancelled を受信。"""
+        worker = self.sender()
+        try:
+            request_id = worker.request_id if worker is not None else self._grabcut_request_id
+        except RuntimeError:
+            request_id = self._grabcut_request_id
+        self._on_grabcut_cancelled(request_id)
 
     def _on_grabcut_finished(self, result: object, request_id: int) -> None:
         """Worker正常完了。リクエストIDが一致する場合のみプレビューに反映する。"""
@@ -696,11 +738,13 @@ class MainWindow(QMainWindow):
             self._grabcut_worker.request_cancel()
 
     def _cleanup_grabcut_worker(self) -> None:
-        """ワーカーとスレッドを安全に破棄する。"""
+        """ワーカーとスレッドの参照を解放する。
+        実際のクリーンアップは thread.finished → deleteLater で行われる。
+        thread.wait() はメインスレッドをブロックするため使用しない。
+        """
         if self._grabcut_thread is not None:
             if self._grabcut_thread.isRunning():
                 self._grabcut_thread.quit()
-                self._grabcut_thread.wait(3000)
             self._grabcut_thread = None
         self._grabcut_worker = None
 
@@ -746,7 +790,9 @@ class MainWindow(QMainWindow):
         if self._grabcut_worker is not None:
             _log.info("ウィンドウクローズ: GrabCutワーカーを停止します")
             self._grabcut_worker.request_cancel()
-            self._cleanup_grabcut_worker()
+        if self._grabcut_thread is not None and self._grabcut_thread.isRunning():
+            self._grabcut_thread.quit()
+            self._grabcut_thread.wait(2000)  # クローズ時のみ短時間待機
         event.accept()
 
     # ------------------------------------------------------------------ #

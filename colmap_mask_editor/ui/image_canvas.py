@@ -245,15 +245,16 @@ class ImageCanvas(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "プロジェクトフォルダを開いてください")
             return
 
-        composite = self._build_composite()
+        # 表示解像度でコンポジットを生成 (フル解像度での処理を回避)
+        disp_w = max(1, int(self._image_bgr.shape[1] * self._scale))
+        disp_h = max(1, int(self._image_bgr.shape[0] * self._scale))
+        composite = self._build_composite(disp_w, disp_h)
         qimg = _bgr_to_qimage(composite)
         pixmap = QPixmap.fromImage(qimg)
 
         painter.save()
         painter.translate(self._offset)
-        w = int(self._image_bgr.shape[1] * self._scale)
-        h = int(self._image_bgr.shape[0] * self._scale)
-        painter.drawPixmap(QRect(0, 0, w, h), pixmap)
+        painter.drawPixmap(0, 0, pixmap)
         painter.restore()
 
         # ブラシカーソル
@@ -322,16 +323,36 @@ class ImageCanvas(QWidget):
             painter.drawText(10, 20, "GrabCut処理中...")
             painter.restore()
 
-    def _build_composite(self) -> np.ndarray:
-        img = self._image_bgr.copy()
+    def _build_composite(self, disp_w: int = 0, disp_h: int = 0) -> np.ndarray:
+        """コンポジット画像を生成する。
+        disp_w/disp_h が指定された場合はその解像度で処理し、大画像の描画コストを削減する。
+        """
+        ih, iw = self._image_bgr.shape[:2]
+
+        # 表示解像度へダウンスケール (拡大時はそのまま)
+        if disp_w > 0 and disp_h > 0 and (disp_w != iw or disp_h != ih):
+            interp = cv2.INTER_LINEAR if disp_w <= iw else cv2.INTER_CUBIC
+            img = cv2.resize(self._image_bgr, (disp_w, disp_h), interpolation=interp)
+        else:
+            img = self._image_bgr.copy()
+
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+        dh, dw = img.shape[:2]
+        needs_scale = (dw != iw or dh != ih)
 
         result = img
         if self._mask_visible and self._editor is not None:
             mask = self._editor.mask
-            if self._diff_mode and self._baseline_mask is not None and mask.shape == self._baseline_mask.shape:
-                result = self._build_diff_composite(img, mask)
+            if needs_scale:
+                mask = cv2.resize(mask, (dw, dh), interpolation=cv2.INTER_NEAREST)
+
+            if self._diff_mode and self._baseline_mask is not None and self._editor.mask.shape == self._baseline_mask.shape:
+                base_mask = self._baseline_mask
+                if needs_scale:
+                    base_mask = cv2.resize(base_mask, (dw, dh), interpolation=cv2.INTER_NEAREST)
+                result = self._build_diff_composite(img, mask, base_mask)
             elif mask.shape[:2] == img.shape[:2]:
                 overlay = img.copy()
                 r, g, b = self._mask_color
@@ -339,20 +360,24 @@ class ImageCanvas(QWidget):
                 result = cv2.addWeighted(overlay, self._mask_opacity, img, 1.0 - self._mask_opacity, 0)
 
         # GrabCutプレビューをマスク表示ON/OFFに関わらず重ねる
-        if (self._grabcut_preview_mask is not None
-                and self._grabcut_preview_mask.shape[:2] == img.shape[:2]):
-            result = self._overlay_grabcut_preview(result)
+        if self._grabcut_preview_mask is not None and self._grabcut_preview_mask.shape[:2] == (ih, iw):
+            gc_mask = self._grabcut_preview_mask
+            if needs_scale:
+                gc_mask = cv2.resize(gc_mask, (dw, dh), interpolation=cv2.INTER_NEAREST)
+            result = self._overlay_grabcut_preview(result, gc_mask)
 
         return result
 
-    def _build_diff_composite(self, img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def _build_diff_composite(self, img: np.ndarray, mask: np.ndarray,
+                               base_mask: Optional[np.ndarray] = None) -> np.ndarray:
         """差分表示: 追加=緑, 削除=青, 変化なし=赤半透明"""
-        base = self._baseline_mask
+        if base_mask is None:
+            base_mask = self._baseline_mask
         result = img.copy()
 
-        added   = (mask == 255) & (base == 0)    # 追加領域: 緑
-        removed = (mask == 0)   & (base == 255)  # 削除領域: 青
-        kept    = (mask == 255) & (base == 255)  # 変化なし: 赤半透明
+        added   = (mask == 255) & (base_mask == 0)    # 追加領域: 緑
+        removed = (mask == 0)   & (base_mask == 255)  # 削除領域: 青
+        kept    = (mask == 255) & (base_mask == 255)  # 変化なし: 赤半透明
 
         overlay = result.copy()
         overlay[added]   = (0,   200, 0)    # BGR: 緑
@@ -367,12 +392,15 @@ class ImageCanvas(QWidget):
 
         return result
 
-    def _overlay_grabcut_preview(self, base: np.ndarray) -> np.ndarray:
+    def _overlay_grabcut_preview(self, base: np.ndarray,
+                                  gc_mask: Optional[np.ndarray] = None) -> np.ndarray:
         """GrabCutプレビュー結果を半透明オーバーレイで表示"""
-        if self._grabcut_preview_mask is None:
+        if gc_mask is None:
+            gc_mask = self._grabcut_preview_mask
+        if gc_mask is None:
             return base
 
-        region = self._grabcut_preview_mask == 255
+        region = gc_mask == 255
         if not np.any(region):
             return base
 

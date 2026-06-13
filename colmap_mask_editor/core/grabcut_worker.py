@@ -27,9 +27,13 @@ class GrabCutWorker(QObject):
     """
     GrabCut処理をバックグラウンドスレッドで実行するWorker。
     Qtウィジェットを直接操作せず、Signalのみで通知する。
+
+    NOTE: finished は引数なし Signal() で定義する。
+    Signal(object) をスレッド境界で渡すと PySide6 のバージョンによっては
+    queued delivery が不安定なため、結果は self.result 属性に格納して渡す。
     """
 
-    finished = Signal(object)   # GrabCutResult
+    finished = Signal()         # 完了通知 (結果は self.result を参照)
     failed = Signal(str)        # ユーザー向けエラーメッセージ
     progress = Signal(str)      # 進捗メッセージ
     cancelled = Signal()
@@ -48,6 +52,7 @@ class GrabCutWorker(QObject):
         self._options = options
         self._request_id = request_id
         self._cancel_requested = False
+        self.result: object = None  # GrabCutResult | None
 
     @property
     def request_id(self) -> int:
@@ -87,12 +92,13 @@ class GrabCutWorker(QObject):
                 self.cancelled.emit()
                 return
 
-            self.progress.emit("結果を元解像度へ復元しています")
+            self.result = result  # メインスレッドが sender().result で取得する
+            self.progress.emit("プレビューを準備しています")
             _log.info(
                 "GrabCutWorker 完了 (request_id=%d): 処理時間 %.3f秒, 縮小率 %.4f",
                 self._request_id, result.processing_time_sec, result.scale,
             )
-            self.finished.emit(result)
+            self.finished.emit()
 
         except ValueError as e:
             _log.warning("GrabCut ValueError (request_id=%d): %s", self._request_id, e)
