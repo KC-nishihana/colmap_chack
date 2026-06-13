@@ -67,7 +67,9 @@ def test_finished_signal_emitted_on_success(qtbot, monkeypatch):
     worker.run()
 
     assert len(finished) == 1
-    assert isinstance(finished[0][0], GrabCutResult)
+    assert finished[0] == ()           # Signal() は引数なし → 空タプル
+    assert isinstance(worker.result, GrabCutResult)
+    assert worker.result is dummy
 
 
 # ------------------------------------------------------------------ #
