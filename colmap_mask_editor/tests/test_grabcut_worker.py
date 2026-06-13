@@ -109,7 +109,7 @@ def test_finished_signal_emitted_on_success(qtbot, monkeypatch):
     worker.run()
 
     assert len(finished) == 1
-    assert finished[0] == ()           # Signal() は引数なし → 空タプル
+    assert finished[0] == (1,)         # Signal(int) → request_id を含むタプル
     assert isinstance(worker.result, GrabCutResult)   # 後方互換のためGrabCutResult
     assert worker.session is dummy_session             # セッションも保存される
 

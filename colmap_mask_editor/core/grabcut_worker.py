@@ -61,10 +61,10 @@ class GrabCutWorker(QObject):
       self.session → GrabCutSession (same as result)
     """
 
-    finished = Signal()         # 完了通知 (結果は self.result を参照)
-    failed = Signal(str)        # ユーザー向けエラーメッセージ
+    finished = Signal(int)      # request_id — int はスレッド境界を安全に渡せる
+    failed = Signal(str, int)   # message, request_id
     progress = Signal(str)      # 進捗メッセージ
-    cancelled = Signal()
+    cancelled = Signal(int)     # request_id
 
     def __init__(
         self,
@@ -121,28 +121,30 @@ class GrabCutWorker(QObject):
 
         except ValueError as e:
             _log.warning("GrabCut ValueError (request_id=%d): %s", self._request_id, e)
-            self.failed.emit(str(e))
+            self.failed.emit(str(e), self._request_id)
         except cv2.error as e:
             _log.error("GrabCut cv2.error (request_id=%d): %s", self._request_id, e)
             self.failed.emit(
                 "OpenCV GrabCut処理に失敗しました。\n"
-                "反復回数を下げるか、矩形範囲を変更してください。"
+                "反復回数を下げるか、矩形範囲を変更してください。",
+                self._request_id,
             )
         except MemoryError:
             _log.error("GrabCut MemoryError (request_id=%d)", self._request_id)
             self.failed.emit(
                 "画像サイズが大きく、メモリを確保できませんでした。\n"
-                "最大処理サイズを小さくしてください。"
+                "最大処理サイズを小さくしてください。",
+                self._request_id,
             )
         except RuntimeError as e:
             _log.error("GrabCut RuntimeError (request_id=%d): %s", self._request_id, e)
-            self.failed.emit(f"実行時エラーが発生しました: {e}")
+            self.failed.emit(f"実行時エラーが発生しました: {e}", self._request_id)
         except Exception as e:
             _log.error(
                 "GrabCut 予期しないエラー (request_id=%d):\n%s",
                 self._request_id, traceback.format_exc(),
             )
-            self.failed.emit(f"予期しないエラーが発生しました: {e}")
+            self.failed.emit(f"予期しないエラーが発生しました: {e}", self._request_id)
 
     # ------------------------------------------------------------------ #
     # 内部処理
@@ -153,7 +155,7 @@ class GrabCutWorker(QObject):
         self.progress.emit("ROIを準備しています")
         if self._cancel_requested:
             _log.info("GrabCutキャンセル (ROI前, request_id=%d)", self._request_id)
-            self.cancelled.emit()
+            self.cancelled.emit(self._request_id)
             return
 
         if self._options.use_downscale:
@@ -163,7 +165,7 @@ class GrabCutWorker(QObject):
 
         if self._cancel_requested:
             _log.info("GrabCutキャンセル (GrabCut前, request_id=%d)", self._request_id)
-            self.cancelled.emit()
+            self.cancelled.emit(self._request_id)
             return
 
         gc_session: GrabCutSession = create_grabcut_session(
@@ -172,7 +174,7 @@ class GrabCutWorker(QObject):
 
         if self._cancel_requested:
             _log.info("GrabCutキャンセル (GrabCut後, request_id=%d)", self._request_id)
-            self.cancelled.emit()
+            self.cancelled.emit(self._request_id)
             return
 
         # 後方互換のため GrabCutResult も生成
@@ -194,7 +196,7 @@ class GrabCutWorker(QObject):
             "GrabCutWorker 完了 (request_id=%d): 処理時間 %.3f秒, 縮小率 %.4f",
             self._request_id, gc_result.processing_time_sec, gc_result.scale,
         )
-        self.finished.emit()
+        self.finished.emit(self._request_id)
 
     def _run_refine(self) -> None:
         """ヒントを使ったGrabCut再推定 (GC_INIT_WITH_MASK)。"""
@@ -203,7 +205,7 @@ class GrabCutWorker(QObject):
 
         self.progress.emit("ヒントを処理しています")
         if self._cancel_requested:
-            self.cancelled.emit()
+            self.cancelled.emit(self._request_id)
             return
 
         _log.info(
@@ -213,7 +215,7 @@ class GrabCutWorker(QObject):
 
         self.progress.emit("GrabCut再推定を実行しています")
         if self._cancel_requested:
-            self.cancelled.emit()
+            self.cancelled.emit(self._request_id)
             return
 
         iter_count = max(1, min(20, self._options.iter_count))
@@ -222,7 +224,7 @@ class GrabCutWorker(QObject):
         )
 
         if self._cancel_requested:
-            self.cancelled.emit()
+            self.cancelled.emit(self._request_id)
             return
 
         self.result = new_session
@@ -233,4 +235,4 @@ class GrabCutWorker(QObject):
             "GrabCut再推定完了 (request_id=%d): 再推定回数=%d, 処理時間=%.3f秒",
             self._request_id, new_session.refine_count, new_session.processing_time_sec,
         )
-        self.finished.emit()
+        self.finished.emit(self._request_id)
