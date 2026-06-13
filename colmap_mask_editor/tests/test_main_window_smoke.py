@@ -69,7 +69,7 @@ def test_window_title_contains_version(qtbot):
     """タイトルにバージョン番号が含まれる"""
     win = MainWindow()
     qtbot.addWidget(win)
-    assert "v0.4A.1" in win.windowTitle()
+    assert "v0.4B" in win.windowTitle()
 
 
 def test_canvas_exists(qtbot):

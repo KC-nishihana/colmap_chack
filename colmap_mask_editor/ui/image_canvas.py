@@ -1,6 +1,6 @@
 """
 中央キャンバス: 画像表示・マスク半透明重ね・ブラシ/矩形/ポリゴン/GrabCut編集・差分表示・ズーム・パン
-v0.4A.1: GrabCut処理をシグナルで委譲し、処理中フラグで二重起動を防止
+v0.4B: GrabCutUiState追加・対話型ヒント描画・再推定対応
 """
 
 from enum import Enum, auto
@@ -37,6 +37,15 @@ class EditMode(Enum):
     PAN = auto()
 
 
+class GrabCutUiState(Enum):
+    """GrabCut処理のUI状態遷移。"""
+    IDLE = auto()             # セッションなし
+    INITIAL_RUNNING = auto()  # 初回GrabCut実行中
+    PREVIEW = auto()          # 初回結果表示中 (Enter=適用/Esc=キャンセル/ヒントボタンで HINT_EDITING へ)
+    HINT_EDITING = auto()     # ヒント描画中
+    REFINE_RUNNING = auto()   # 再推定実行中
+
+
 _MODE_LABEL = {
     EditMode.BRUSH:          "ブラシ",
     EditMode.RECT_ADD:       "矩形追加",
@@ -55,6 +64,7 @@ _GRABCUT_MODES = (EditMode.GRABCUT_ADD, EditMode.GRABCUT_DEL, EditMode.GRABCUT_R
 class ImageCanvas(QWidget):
     """
     画像とマスクを重ね表示し、各種編集・ズーム・パンを提供するウィジェット。
+    v0.4B: GrabCut再推定用ヒント描画機能を追加。
     """
 
     mask_changed = Signal()
@@ -62,11 +72,22 @@ class ImageCanvas(QWidget):
     status_message = Signal(str, int)    # メッセージ, タイムアウトms (0=持続)
 
     # GrabCut処理をメインウィンドウ側へ委譲するシグナル
-    # dict: {"image": ndarray, "rect": tuple, "mode": str, "options": GrabCutOptions}
+    # dict: {"image": ndarray, "rect": tuple, "mode": str, "options": GrabCutOptions,
+    #        "current_mask": ndarray|None}
     grabcut_requested = Signal(object)
+
+    # 再推定リクエスト (ヒントストロークとオプションをMainWindowへ送る)
+    # dict: {"strokes": list[HintStroke], "options": GrabCutOptions}
+    grabcut_refine_requested = Signal(object)
 
     # キャンセル要求 (処理中にEscを押した場合)
     grabcut_cancel_requested = Signal()
+
+    # セッションキャンセル (プレビュー中にEscを押した場合)
+    grabcut_session_cancelled = Signal()
+
+    # UI状態変化通知 (MainWindowがパネルの有効/無効を更新するために使用)
+    grabcut_state_changed = Signal(object)  # GrabCutUiState
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -119,14 +140,27 @@ class ImageCanvas(QWidget):
         self._grabcut_post_kernel_size: int = 3
         self._grabcut_use_downscale: bool = True
         self._grabcut_max_processing_size: int = 2048
+        self._grabcut_use_existing_mask_as_bgd: bool = False
 
-        # GrabCutプレビュー状態
+        # GrabCutプレビュー状態 (V0.4A互換)
         self._grabcut_preview_mask: Optional[np.ndarray] = None
         self._grabcut_preview_mode: Optional[str] = None
         self._grabcut_rect: Optional[tuple[int, int, int, int]] = None
 
-        # GrabCut処理中フラグ (二重起動防止)
-        self._grabcut_processing: bool = False
+        # GrabCut UI状態 (V0.4B)
+        self._gc_ui_state: GrabCutUiState = GrabCutUiState.IDLE
+
+        # ヒント描画状態 (V0.4B)
+        # label: GrabCutHintLabel.FOREGROUND/BACKGROUND or None (消去)
+        self._gc_hint_label = None   # Optional[GrabCutHintLabel] - None=消去
+        self._gc_hint_is_active: bool = False   # ヒントツールが選択されているか
+        self._gc_hint_radius: int = 20
+        self._gc_hint_strokes: list = []        # list[HintStroke]
+        self._gc_hint_redo_stack: list = []     # list[HintStroke]
+
+        # 現在描画中のストローク
+        self._gc_hint_drawing: bool = False
+        self._gc_current_stroke_pts: list[tuple[int, int]] = []
 
         self.setMinimumSize(400, 300)
 
@@ -208,11 +242,20 @@ class ImageCanvas(QWidget):
     def set_grabcut_max_processing_size(self, value: int) -> None:
         self._grabcut_max_processing_size = max(512, min(4096, value))
 
+    def set_grabcut_use_existing_mask_as_bgd(self, enabled: bool) -> None:
+        self._grabcut_use_existing_mask_as_bgd = enabled
+
     # ----- GrabCut状態 (読み取り) -----
 
     @property
     def grabcut_processing(self) -> bool:
-        return self._grabcut_processing
+        return self._gc_ui_state in (
+            GrabCutUiState.INITIAL_RUNNING, GrabCutUiState.REFINE_RUNNING
+        )
+
+    @property
+    def gc_ui_state(self) -> GrabCutUiState:
+        return self._gc_ui_state
 
     # ----- GrabCutプレビューのセット/クリア (Workerから呼ばれる) -----
 
@@ -220,8 +263,19 @@ class ImageCanvas(QWidget):
         """Worker処理完了後にメインウィンドウから呼ばれてプレビューをセットする。"""
         self._grabcut_preview_mask = mask
         self._grabcut_preview_mode = mode_str
-        self._grabcut_processing = False
-        self.status_message.emit("GrabCutプレビュー中: Enter=適用 / Esc=キャンセル", 0)
+        self._set_gc_ui_state(GrabCutUiState.PREVIEW)
+        self.status_message.emit(
+            "GrabCutプレビュー中: Enter=適用 / Esc=キャンセル / ヒントボタンで補正", 0
+        )
+        self.update()
+
+    def update_grabcut_preview(self, mask: np.ndarray) -> None:
+        """再推定完了後にメインウィンドウから呼ばれてプレビューを更新する。"""
+        self._grabcut_preview_mask = mask
+        self._set_gc_ui_state(GrabCutUiState.HINT_EDITING)
+        self.status_message.emit(
+            "再推定完了: Enter=適用 / Esc=キャンセル / ヒント追加 / Ctrl+Enter=再推定", 0
+        )
         self.update()
 
     def clear_grabcut_state(self) -> None:
@@ -229,7 +283,90 @@ class ImageCanvas(QWidget):
         self._grabcut_preview_mask = None
         self._grabcut_preview_mode = None
         self._grabcut_rect = None
-        self._grabcut_processing = False
+        # ヒント状態もクリア
+        self._gc_hint_strokes.clear()
+        self._gc_hint_redo_stack.clear()
+        self._gc_hint_drawing = False
+        self._gc_current_stroke_pts.clear()
+        self._gc_hint_is_active = False
+        self._set_gc_ui_state(GrabCutUiState.IDLE)
+        self.update()
+
+    # ----- ヒントツール API (V0.4B) -----
+
+    def set_hint_label(self, label) -> None:
+        """
+        ヒントラベルを設定してヒント描画モードに入る。
+        label: GrabCutHintLabel.FOREGROUND / GrabCutHintLabel.BACKGROUND / None(消去)
+        """
+        self._gc_hint_label = label
+        self._gc_hint_is_active = True
+        if self._gc_ui_state == GrabCutUiState.PREVIEW:
+            self._set_gc_ui_state(GrabCutUiState.HINT_EDITING)
+            self.status_message.emit(
+                "ヒント描画中: 左ドラッグ=描画 / 右クリック=取消 / Ctrl+Enter=再推定 / Enter=適用", 0
+            )
+        self.update()
+
+    def deactivate_hint_tool(self) -> None:
+        """ヒント描画モードを無効化する (GrabCut状態は維持)。"""
+        self._gc_hint_is_active = False
+        self.update()
+
+    def set_hint_radius(self, radius: int) -> None:
+        self._gc_hint_radius = max(1, min(300, radius))
+
+    def get_hint_radius(self) -> int:
+        return self._gc_hint_radius
+
+    def gc_undo_hint(self) -> None:
+        """最後のヒントストロークを取り消す。"""
+        if self._gc_hint_strokes:
+            stroke = self._gc_hint_strokes.pop()
+            self._gc_hint_redo_stack.append(stroke)
+            self.status_message.emit("ヒントを取り消しました", 2000)
+            self.update()
+
+    def gc_redo_hint(self) -> None:
+        """取り消したヒントストロークをやり直す。"""
+        if self._gc_hint_redo_stack:
+            stroke = self._gc_hint_redo_stack.pop()
+            self._gc_hint_strokes.append(stroke)
+            self.status_message.emit("ヒントをやり直しました", 2000)
+            self.update()
+
+    def gc_clear_hints(self) -> None:
+        """全ヒントストロークを消去する。"""
+        if self._gc_hint_strokes or self._gc_hint_redo_stack:
+            self._gc_hint_strokes.clear()
+            self._gc_hint_redo_stack.clear()
+            self.status_message.emit("ヒントを全消去しました", 2000)
+            self.update()
+
+    def get_hint_strokes(self) -> list:
+        """現在のヒントストローク一覧のコピーを返す。"""
+        return list(self._gc_hint_strokes)
+
+    def request_grabcut_refine(self) -> None:
+        """
+        現在のヒントストロークを使ってGrabCut再推定をリクエストする。
+        """
+        if self._gc_ui_state not in (GrabCutUiState.PREVIEW, GrabCutUiState.HINT_EDITING):
+            return
+
+        from core.grabcut_tool import GrabCutOptions
+        options = GrabCutOptions(
+            iter_count=self._grabcut_iter_count,
+            use_downscale=self._grabcut_use_downscale,
+            max_processing_size=self._grabcut_max_processing_size,
+        )
+
+        self._set_gc_ui_state(GrabCutUiState.REFINE_RUNNING)
+        self.grabcut_refine_requested.emit({
+            "strokes": list(self._gc_hint_strokes),
+            "options": options,
+        })
+        self.status_message.emit("GrabCut再推定中...", 0)
         self.update()
 
     # ------------------------------------------------------------------ #
@@ -257,6 +394,19 @@ class ImageCanvas(QWidget):
         painter.drawPixmap(0, 0, pixmap)
         painter.restore()
 
+        # ヒントストローク描画 (コンポジットの上にQPainterで描く)
+        if self._gc_ui_state in (GrabCutUiState.HINT_EDITING, GrabCutUiState.PREVIEW):
+            for stroke in self._gc_hint_strokes:
+                self._paint_hint_stroke(painter, stroke.points, stroke.radius, stroke.label)
+
+        # 現在描画中のストローク
+        if self._gc_hint_drawing and self._gc_current_stroke_pts:
+            self._paint_hint_stroke(
+                painter, self._gc_current_stroke_pts,
+                self._gc_hint_radius, self._gc_hint_label,
+                is_current=True,
+            )
+
         # ブラシカーソル
         if self._edit_mode == EditMode.BRUSH and self._cursor_pos:
             mx, my = self._cursor_pos
@@ -268,6 +418,28 @@ class ImageCanvas(QWidget):
                 painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5))
             else:
                 painter.setPen(QPen(QColor(100, 200, 255, 200), 1.5))
+            painter.drawEllipse(QPoint(cx, cy), r, r)
+            painter.restore()
+
+        # ヒントブラシカーソル (ヒントモードでドラッグしていない時)
+        if (self._gc_hint_is_active and not self._gc_hint_drawing and
+                self._cursor_pos is not None and
+                self._gc_ui_state in (GrabCutUiState.HINT_EDITING, GrabCutUiState.PREVIEW)):
+            mx, my = self._cursor_pos
+            cx = int(mx * self._scale + self._offset.x())
+            cy = int(my * self._scale + self._offset.y())
+            r = max(1, int(self._gc_hint_radius * self._scale))
+            painter.save()
+            if self._gc_hint_label is None:
+                # 消去カーソル
+                painter.setPen(QPen(QColor(220, 220, 220, 200), 1.5, Qt.PenStyle.DashLine))
+            else:
+                from core.grabcut_tool import GrabCutHintLabel
+                if self._gc_hint_label == GrabCutHintLabel.FOREGROUND:
+                    painter.setPen(QPen(QColor(0, 220, 0, 220), 2.0))
+                else:
+                    painter.setPen(QPen(QColor(220, 0, 0, 220), 2.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(QPoint(cx, cy), r, r)
             painter.restore()
 
@@ -317,11 +489,61 @@ class ImageCanvas(QWidget):
             painter.restore()
 
         # 処理中インジケーター
-        if self._grabcut_processing:
+        if self._gc_ui_state in (GrabCutUiState.INITIAL_RUNNING, GrabCutUiState.REFINE_RUNNING):
             painter.save()
             painter.setPen(QColor(255, 200, 0))
-            painter.drawText(10, 20, "GrabCut処理中...")
+            label = "GrabCut処理中..." if self._gc_ui_state == GrabCutUiState.INITIAL_RUNNING else "再推定中..."
+            painter.drawText(10, 20, label)
             painter.restore()
+
+    def _paint_hint_stroke(
+        self, painter: QPainter,
+        pts: list[tuple[int, int]],
+        radius: int,
+        label,
+        is_current: bool = False,
+    ) -> None:
+        """ヒントストロークをQPainterで描画する。"""
+        if not pts:
+            return
+
+        from core.grabcut_tool import GrabCutHintLabel
+
+        if label == GrabCutHintLabel.FOREGROUND:
+            stroke_color = QColor(0, 220, 0, 200 if not is_current else 255)
+        elif label == GrabCutHintLabel.BACKGROUND:
+            stroke_color = QColor(220, 0, 0, 200 if not is_current else 255)
+        else:  # 消去
+            stroke_color = QColor(220, 220, 220, 180 if not is_current else 220)
+
+        r = max(1, int(radius * self._scale))
+        pen_width = max(1, r * 2)
+
+        painter.save()
+        if label is None:  # 消去
+            pen = QPen(stroke_color, pen_width, Qt.PenStyle.DashLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        else:
+            pen = QPen(stroke_color, pen_width, Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        pts_w = [self._mask_to_widget(x, y) for x, y in pts]
+
+        for i in range(len(pts_w) - 1):
+            x0, y0 = pts_w[i]
+            x1, y1 = pts_w[i + 1]
+            painter.drawLine(QPoint(x0, y0), QPoint(x1, y1))
+
+        # 最初と最後に円を描いて端点をきれいに
+        if len(pts_w) == 1:
+            x0, y0 = pts_w[0]
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(stroke_color)
+            painter.drawEllipse(QPoint(x0, y0), r, r)
+
+        painter.restore()
 
     def _build_composite(self, disp_w: int = 0, disp_h: int = 0) -> np.ndarray:
         """コンポジット画像を生成する。
@@ -468,10 +690,33 @@ class ImageCanvas(QWidget):
         elif mode in _GRABCUT_MODES:
             if event.button() == Qt.MouseButton.LeftButton:
                 mx, my = self._widget_to_mask(event.position())
-                if mx is not None:
+                if mx is None:
+                    return
+
+                # ヒントモードが有効な場合はヒント描画
+                if (self._gc_hint_is_active and
+                        self._gc_ui_state in (GrabCutUiState.HINT_EDITING, GrabCutUiState.PREVIEW)):
+                    if self._gc_ui_state == GrabCutUiState.PREVIEW:
+                        self._set_gc_ui_state(GrabCutUiState.HINT_EDITING)
+                    self._gc_hint_drawing = True
+                    self._gc_current_stroke_pts = [(mx, my)]
+                    self._gc_hint_redo_stack.clear()  # 新しい描画でRedoスタックをクリア
+
+                elif self._gc_ui_state in (GrabCutUiState.IDLE, GrabCutUiState.PREVIEW):
+                    # 新しいGrabCut矩形を開始
+                    if self._gc_ui_state == GrabCutUiState.PREVIEW:
+                        # 既存プレビューをキャンセルして新しい矩形を開始
+                        self._cancel_session_internal()
                     self._rect_start = (mx, my)
                     self._rect_end = (mx, my)
                     self._rect_dragging = True
+
+            elif event.button() == Qt.MouseButton.RightButton:
+                # ヒント描画中なら現在のストロークをキャンセル
+                if self._gc_hint_drawing:
+                    self._gc_hint_drawing = False
+                    self._gc_current_stroke_pts.clear()
+                    self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._image_bgr is None:
@@ -491,6 +736,10 @@ class ImageCanvas(QWidget):
 
         if self._painting and self._edit_mode == EditMode.BRUSH:
             self._do_paint(pos)
+        elif self._gc_hint_drawing and mx is not None:
+            # ヒントストローク描画中
+            self._gc_current_stroke_pts.append((mx, my))
+            self.update()
         elif self._rect_dragging and self._rect_start is not None:
             if mx is not None:
                 self._rect_end = (mx, my)
@@ -520,7 +769,21 @@ class ImageCanvas(QWidget):
             self.update()
 
         elif self._edit_mode in _GRABCUT_MODES:
-            if self._rect_dragging and self._rect_start and self._rect_end:
+            if self._gc_hint_drawing:
+                # ヒントストロークを確定
+                if self._gc_current_stroke_pts:
+                    from core.grabcut_tool import HintStroke
+                    stroke = HintStroke(
+                        label=self._gc_hint_label,
+                        points=list(self._gc_current_stroke_pts),
+                        radius=self._gc_hint_radius,
+                    )
+                    self._gc_hint_strokes.append(stroke)
+                self._gc_hint_drawing = False
+                self._gc_current_stroke_pts.clear()
+                self.update()
+
+            elif self._rect_dragging and self._rect_start and self._rect_end:
                 self._request_grabcut_preview()
             self._rect_start = None
             self._rect_end = None
@@ -549,6 +812,8 @@ class ImageCanvas(QWidget):
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
         mode = self._edit_mode
+        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        shift = event.modifiers() & Qt.KeyboardModifier.ShiftModifier
 
         if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             self.set_brush_radius(self._brush_radius + 5)
@@ -557,14 +822,57 @@ class ImageCanvas(QWidget):
             self.set_brush_radius(self._brush_radius - 5)
             return
 
-        # GrabCutモード中はEnter/EscをGrabCut処理に使う (ポリゴンより優先)
-        if mode in _GRABCUT_MODES:
+        # GrabCutセッションが有効な場合の特殊キー処理
+        if self._gc_ui_state != GrabCutUiState.IDLE:
+            # Ctrl+Enter → 再推定
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and ctrl:
+                if self._gc_ui_state in (GrabCutUiState.PREVIEW, GrabCutUiState.HINT_EDITING):
+                    self.request_grabcut_refine()
+                return
+
+            # Ctrl+Shift+Z → ヒント全消去
+            if key == Qt.Key.Key_Z and ctrl and shift:
+                if self._gc_ui_state == GrabCutUiState.HINT_EDITING:
+                    self.gc_clear_hints()
+                return
+
+            # Ctrl+Z → ヒントUndo (HINT_EDITING時のみ)
+            if key == Qt.Key.Key_Z and ctrl and not shift:
+                if self._gc_ui_state == GrabCutUiState.HINT_EDITING:
+                    self.gc_undo_hint()
+                    return
+                # IDLE/PREVIEW ではフォールスルーして通常Undoへ
+
+            # Ctrl+Y → ヒントRedo (HINT_EDITING時のみ)
+            if key == Qt.Key.Key_Y and ctrl:
+                if self._gc_ui_state == GrabCutUiState.HINT_EDITING:
+                    self.gc_redo_hint()
+                    return
+
+            # Enter → 適用 (処理中でない場合)
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not ctrl:
+                if self._gc_ui_state in (GrabCutUiState.PREVIEW, GrabCutUiState.HINT_EDITING):
+                    self.apply_grabcut_preview()
+                return
+
+            # Esc → キャンセル
+            if key == Qt.Key.Key_Escape:
+                if self._gc_ui_state in (GrabCutUiState.INITIAL_RUNNING, GrabCutUiState.REFINE_RUNNING):
+                    self.grabcut_cancel_requested.emit()
+                elif self._gc_ui_state in (GrabCutUiState.PREVIEW, GrabCutUiState.HINT_EDITING):
+                    self._cancel_session_internal()
+                    self.grabcut_session_cancelled.emit()
+                return
+
+        # GrabCutモード (V0.4A互換 - セッションなし時)
+        if mode in _GRABCUT_MODES and self._gc_ui_state == GrabCutUiState.IDLE:
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                if not self._grabcut_processing:
+                # プレビューがある場合は適用 (IDLEではないはずだが念のため)
+                if self._grabcut_preview_mask is not None:
                     self.apply_grabcut_preview()
                 return
             if key == Qt.Key.Key_Escape:
-                if self._grabcut_processing:
+                if self.grabcut_processing:
                     self.grabcut_cancel_requested.emit()
                 else:
                     self.cancel_grabcut_preview()
@@ -634,7 +942,7 @@ class ImageCanvas(QWidget):
         if self._rect_start is None or self._rect_end is None:
             return
 
-        if self._grabcut_processing:
+        if self.grabcut_processing:
             self.status_message.emit("GrabCut処理中です。完了をお待ちください。", 3000)
             return
 
@@ -666,17 +974,24 @@ class ImageCanvas(QWidget):
             iter_count=self._grabcut_iter_count,
             use_downscale=self._grabcut_use_downscale,
             max_processing_size=self._grabcut_max_processing_size,
+            use_existing_mask_as_bgd=self._grabcut_use_existing_mask_as_bgd,
         )
 
-        self._grabcut_processing = True
+        self._set_gc_ui_state(GrabCutUiState.INITIAL_RUNNING)
         self._grabcut_preview_mode = mode_str
         self._grabcut_rect = (lx, ty, rw, rh)
+
+        # 既存マスクを背景制約として使用する場合はコピーを渡す
+        current_mask_copy = None
+        if self._grabcut_use_existing_mask_as_bgd and self._editor is not None:
+            current_mask_copy = self._editor.mask.copy()
 
         self.grabcut_requested.emit({
             "image": self._image_bgr.copy(),
             "rect": (lx, ty, rw, rh),
             "mode": mode_str,
             "options": options,
+            "current_mask": current_mask_copy,
         })
         self.status_message.emit("GrabCut処理中...", 0)
         self.update()
@@ -710,9 +1025,16 @@ class ImageCanvas(QWidget):
         )
         self._editor.mask[:] = new_mask
 
+        # セッション全体をクリア
         self._grabcut_preview_mask = None
         self._grabcut_preview_mode = None
         self._grabcut_rect = None
+        self._gc_hint_strokes.clear()
+        self._gc_hint_redo_stack.clear()
+        self._gc_hint_drawing = False
+        self._gc_current_stroke_pts.clear()
+        self._gc_hint_is_active = False
+        self._set_gc_ui_state(GrabCutUiState.IDLE)
 
         self.mask_changed.emit()
         self.status_message.emit("GrabCutを適用しました", 3000)
@@ -722,15 +1044,32 @@ class ImageCanvas(QWidget):
         """GrabCutプレビューを破棄する。Undo履歴は増やさない。"""
         if self._grabcut_preview_mask is None:
             return
+        self._cancel_session_internal()
+        self.grabcut_session_cancelled.emit()
+        self.status_message.emit("GrabCutをキャンセルしました", 2000)
+
+    def _cancel_session_internal(self) -> None:
+        """GrabCutセッション内部状態をクリア (通常マスクは変更しない)。"""
         self._grabcut_preview_mask = None
         self._grabcut_preview_mode = None
         self._grabcut_rect = None
-        self.status_message.emit("GrabCutをキャンセルしました", 2000)
+        self._gc_hint_strokes.clear()
+        self._gc_hint_redo_stack.clear()
+        self._gc_hint_drawing = False
+        self._gc_current_stroke_pts.clear()
+        self._gc_hint_is_active = False
+        self._set_gc_ui_state(GrabCutUiState.IDLE)
         self.update()
 
     # ------------------------------------------------------------------ #
     # 内部ヘルパー
     # ------------------------------------------------------------------ #
+
+    def _set_gc_ui_state(self, state: GrabCutUiState) -> None:
+        """GrabCut UI状態を更新しシグナルを発火する。"""
+        if self._gc_ui_state != state:
+            self._gc_ui_state = state
+            self.grabcut_state_changed.emit(state)
 
     def _do_paint(self, pos: QPointF) -> None:
         if self._editor is None:
@@ -781,10 +1120,17 @@ class ImageCanvas(QWidget):
         self._rect_dragging = False
         self._painting = False
         self._stroke_started = False
+        # GrabCutセッション全体をクリア
         self._grabcut_preview_mask = None
         self._grabcut_preview_mode = None
         self._grabcut_rect = None
-        # _grabcut_processing はワーカーライフサイクルで管理するためここでは触らない
+        self._gc_hint_strokes.clear()
+        self._gc_hint_redo_stack.clear()
+        self._gc_hint_drawing = False
+        self._gc_current_stroke_pts.clear()
+        self._gc_hint_is_active = False
+        # _gc_ui_state はワーカーライフサイクルで管理するためここでは触らない
+        # (Workerが実行中に画像が切り替わった場合はMainWindowがclear_grabcut_stateを呼ぶ)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         if self._image_bgr is not None:

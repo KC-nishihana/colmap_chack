@@ -432,3 +432,334 @@
 2026-06-13 11:34:04,212 INFO     core.grabcut_tool: GrabCut完了: 縮小率 1.0000, 処理解像度 335x370, 処理時間 0.922秒
 2026-06-13 11:34:04,212 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=47): 処理時間 0.922秒, 縮小率 1.0000
 2026-06-13 11:34:04,216 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 335x370 | 処理 335x370 | 縮小率 1.000 | 処理時間 0.92秒
+2026-06-13 19:04:11,635 INFO     ui.main_window: GrabCutリクエスト受信: request_id=1, rect=(69, 85, 137, 145), mode=add
+2026-06-13 19:04:11,642 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=1, task=INITIAL)
+2026-06-13 19:04:11,643 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (69, 85, 137, 145), 反復 5
+2026-06-13 19:04:11,643 INFO     core.grabcut_tool: ROI: x=37 y=53 w=201 h=209
+2026-06-13 19:04:11,643 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 201x209, 矩形 (32,32,137,145), 反復 5
+2026-06-13 19:04:11,736 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 201x209, 前景率 1.95%, 処理時間 0.094秒
+2026-06-13 19:04:11,737 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=1): 処理時間 0.094秒, 縮小率 1.0000
+2026-06-13 19:04:11,741 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=1)
+2026-06-13 19:04:22,457 INFO     ui.main_window: GrabCutリクエスト受信: request_id=2, rect=(425, 118, 47, 96), mode=add
+2026-06-13 19:04:22,464 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=2, task=INITIAL)
+2026-06-13 19:04:22,467 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (425, 118, 47, 96), 反復 5
+2026-06-13 19:04:22,467 INFO     core.grabcut_tool: ROI: x=393 y=86 w=111 h=160
+2026-06-13 19:04:22,467 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 111x160, 矩形 (32,32,47,96), 反復 5
+2026-06-13 19:04:22,491 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=2): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:22,554 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:25,303 INFO     ui.main_window: GrabCutリクエスト受信: request_id=3, rect=(288, 95, 287, 205), mode=add
+2026-06-13 19:04:25,311 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=3, task=INITIAL)
+2026-06-13 19:04:25,312 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (288, 95, 287, 205), 反復 5
+2026-06-13 19:04:25,312 INFO     core.grabcut_tool: ROI: x=256 y=63 w=351 h=269
+2026-06-13 19:04:25,312 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 351x269, 矩形 (32,32,287,205), 反復 5
+2026-06-13 19:04:25,732 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 351x269, 前景率 7.67%, 処理時間 0.421秒
+2026-06-13 19:04:25,733 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=3): 処理時間 0.421秒, 縮小率 1.0000
+2026-06-13 19:04:25,738 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=3)
+2026-06-13 19:04:27,182 INFO     ui.main_window: GrabCutリクエスト受信: request_id=4, rect=(319, 158, 84, 77), mode=add
+2026-06-13 19:04:27,192 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=4, task=INITIAL)
+2026-06-13 19:04:27,192 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (319, 158, 84, 77), 反復 5
+2026-06-13 19:04:27,192 INFO     core.grabcut_tool: ROI: x=287 y=126 w=148 h=141
+2026-06-13 19:04:27,192 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 148x141, 矩形 (32,32,84,77), 反復 5
+2026-06-13 19:04:27,221 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=4): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:27,283 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:30,279 INFO     ui.main_window: GrabCutリクエスト受信: request_id=5, rect=(319, 169, 246, 231), mode=add
+2026-06-13 19:04:30,286 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=5, task=INITIAL)
+2026-06-13 19:04:30,287 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (319, 169, 246, 231), 反復 5
+2026-06-13 19:04:30,287 INFO     core.grabcut_tool: ROI: x=287 y=137 w=310 h=295
+2026-06-13 19:04:30,287 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 310x295, 矩形 (32,32,246,231), 反復 5
+2026-06-13 19:04:30,697 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 310x295, 前景率 28.47%, 処理時間 0.410秒
+2026-06-13 19:04:30,697 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=5): 処理時間 0.410秒, 縮小率 1.0000
+2026-06-13 19:04:30,701 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=5)
+2026-06-13 19:04:34,266 INFO     ui.main_window: GrabCutリクエスト受信: request_id=6, rect=(22, 59, 419, 295), mode=add
+2026-06-13 19:04:34,275 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=6, task=INITIAL)
+2026-06-13 19:04:34,276 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (22, 59, 419, 295), 反復 5
+2026-06-13 19:04:34,276 INFO     core.grabcut_tool: ROI: x=0 y=27 w=482 h=359
+2026-06-13 19:04:34,276 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 482x359, 矩形 (22,32,419,295), 反復 5
+2026-06-13 19:04:34,880 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 482x359, 前景率 21.46%, 処理時間 0.605秒
+2026-06-13 19:04:34,881 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=6): 処理時間 0.605秒, 縮小率 1.0000
+2026-06-13 19:04:34,885 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=6)
+2026-06-13 19:04:38,909 INFO     ui.main_window: GrabCutリクエスト受信: request_id=7, rect=(537, 339, 126, 151), mode=add
+2026-06-13 19:04:38,916 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=7, task=INITIAL)
+2026-06-13 19:04:38,917 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (537, 339, 126, 151), 反復 5
+2026-06-13 19:04:38,917 INFO     core.grabcut_tool: ROI: x=505 y=307 w=190 h=215
+2026-06-13 19:04:38,917 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 190x215, 矩形 (32,32,126,151), 反復 5
+2026-06-13 19:04:39,051 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 190x215, 前景率 3.05%, 処理時間 0.135秒
+2026-06-13 19:04:39,052 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=7): 処理時間 0.135秒, 縮小率 1.0000
+2026-06-13 19:04:39,061 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=7)
+2026-06-13 19:04:41,518 INFO     ui.main_window: GrabCutリクエスト受信: request_id=8, rect=(474, 404, 84, 62), mode=add
+2026-06-13 19:04:41,525 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=8, task=INITIAL)
+2026-06-13 19:04:41,526 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (474, 404, 84, 62), 反復 5
+2026-06-13 19:04:41,526 INFO     core.grabcut_tool: ROI: x=442 y=372 w=148 h=126
+2026-06-13 19:04:41,526 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 148x126, 矩形 (32,32,84,62), 反復 5
+2026-06-13 19:04:41,558 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 148x126, 前景率 9.43%, 処理時間 0.033秒
+2026-06-13 19:04:41,558 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=8): 処理時間 0.033秒, 縮小率 1.0000
+2026-06-13 19:04:41,666 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=8)
+2026-06-13 19:04:49,267 INFO     ui.main_window: GrabCutリクエスト受信: request_id=9, rect=(97, 57, 335, 266), mode=add
+2026-06-13 19:04:49,275 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=9, task=INITIAL)
+2026-06-13 19:04:49,276 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (97, 57, 335, 266), 反復 5
+2026-06-13 19:04:49,276 INFO     core.grabcut_tool: ROI: x=64 y=25 w=401 h=330
+2026-06-13 19:04:49,276 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 401x330, 矩形 (33,32,335,266), 反復 5
+2026-06-13 19:04:49,637 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=9): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:49,643 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:52,279 INFO     ui.main_window: GrabCutリクエスト受信: request_id=10, rect=(52, 128, 265, 342), mode=add
+2026-06-13 19:04:52,296 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=10, task=INITIAL)
+2026-06-13 19:04:52,297 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (52, 128, 265, 342), 反復 5
+2026-06-13 19:04:52,297 INFO     core.grabcut_tool: ROI: x=20 y=94 w=329 h=410
+2026-06-13 19:04:52,297 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 329x410, 矩形 (32,34,265,342), 反復 5
+2026-06-13 19:04:52,729 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=10): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:52,734 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:04:58,539 INFO     ui.main_window: GrabCutリクエスト受信: request_id=11, rect=(3, 216, 232, 168), mode=add
+2026-06-13 19:04:58,556 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=11, task=INITIAL)
+2026-06-13 19:04:58,557 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (3, 216, 232, 168), 反復 5
+2026-06-13 19:04:58,557 INFO     core.grabcut_tool: ROI: x=0 y=184 w=267 h=232
+2026-06-13 19:04:58,557 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 267x232, 矩形 (3,32,232,168), 反復 5
+2026-06-13 19:04:58,750 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 267x232, 前景率 0.11%, 処理時間 0.194秒
+2026-06-13 19:04:58,750 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=11): 処理時間 0.194秒, 縮小率 1.0000
+2026-06-13 19:04:58,754 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=11)
+2026-06-13 19:05:00,751 INFO     ui.main_window: GrabCutリクエスト受信: request_id=12, rect=(205, 220, 485, 380), mode=add
+2026-06-13 19:05:00,759 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=12, task=INITIAL)
+2026-06-13 19:05:00,760 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (205, 220, 485, 380), 反復 5
+2026-06-13 19:05:00,760 INFO     core.grabcut_tool: ROI: x=157 y=182 w=581 h=456
+2026-06-13 19:05:00,760 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 581x456, 矩形 (48,38,485,380), 反復 5
+2026-06-13 19:05:03,099 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 581x456, 前景率 20.42%, 処理時間 2.340秒
+2026-06-13 19:05:03,100 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=12): 処理時間 2.340秒, 縮小率 1.0000
+2026-06-13 19:05:03,103 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 581x456 | 処理 581x456 | 縮小率 1.000 | 処理時間 2.34秒
+2026-06-13 19:05:14,129 INFO     ui.main_window: GrabCut再推定リクエスト: request_id=13, ストローク数=0, 再推定=1回目
+2026-06-13 19:05:14,135 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=13, task=REFINE)
+2026-06-13 19:05:14,135 INFO     core.grabcut_worker: 再推定開始: ストローク数=0, 再推定回数=1 (request_id=13)
+2026-06-13 19:05:14,135 DEBUG    core.grabcut_tool: apply_hint_strokes: ストローク数=0, 前景ヒント~0px, 背景ヒント~0px
+2026-06-13 19:05:14,139 INFO     core.grabcut_tool: 再推定開始: 前景ヒント 0px, 背景ヒント 130579px, ストローク数 0, 再推定 1回目
+2026-06-13 19:05:14,139 WARNING  core.grabcut_tool: 前景ヒントがありません
+2026-06-13 19:05:15,112 INFO     core.grabcut_tool: 再推定完了: 前景率 5.87% → 20.07%, 処理時間 0.976秒
+2026-06-13 19:05:15,112 INFO     core.grabcut_worker: GrabCut再推定完了 (request_id=13): 再推定回数=1, 処理時間=0.976秒
+2026-06-13 19:05:15,116 INFO     ui.main_window: 再推定完了 (第1回): 処理時間 0.98秒 | ヒント追加 or Enter=適用 / Esc=キャンセル
+2026-06-13 19:05:19,538 INFO     ui.main_window: GrabCut再推定リクエスト: request_id=14, ストローク数=0, 再推定=2回目
+2026-06-13 19:05:19,548 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=14, task=REFINE)
+2026-06-13 19:05:19,548 INFO     core.grabcut_worker: 再推定開始: ストローク数=0, 再推定回数=2 (request_id=14)
+2026-06-13 19:05:19,548 DEBUG    core.grabcut_tool: apply_hint_strokes: ストローク数=0, 前景ヒント~0px, 背景ヒント~0px
+2026-06-13 19:05:19,550 INFO     core.grabcut_tool: 再推定開始: 前景ヒント 0px, 背景ヒント 130579px, ストローク数 0, 再推定 2回目
+2026-06-13 19:05:19,550 WARNING  core.grabcut_tool: 前景ヒントがありません
+2026-06-13 19:05:20,521 INFO     core.grabcut_tool: 再推定完了: 前景率 5.77% → 20.07%, 処理時間 0.972秒
+2026-06-13 19:05:20,521 INFO     core.grabcut_worker: GrabCut再推定完了 (request_id=14): 再推定回数=2, 処理時間=0.972秒
+2026-06-13 19:05:20,525 INFO     ui.main_window: 再推定完了 (第2回): 処理時間 0.97秒 | ヒント追加 or Enter=適用 / Esc=キャンセル
+2026-06-13 19:05:23,733 INFO     ui.main_window: GrabCut再推定リクエスト: request_id=15, ストローク数=0, 再推定=3回目
+2026-06-13 19:05:23,742 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=15, task=REFINE)
+2026-06-13 19:05:23,742 INFO     core.grabcut_worker: 再推定開始: ストローク数=0, 再推定回数=3 (request_id=15)
+2026-06-13 19:05:23,742 DEBUG    core.grabcut_tool: apply_hint_strokes: ストローク数=0, 前景ヒント~0px, 背景ヒント~0px
+2026-06-13 19:05:23,746 INFO     core.grabcut_tool: 再推定開始: 前景ヒント 0px, 背景ヒント 130579px, ストローク数 0, 再推定 3回目
+2026-06-13 19:05:23,746 WARNING  core.grabcut_tool: 前景ヒントがありません
+2026-06-13 19:05:24,713 INFO     core.grabcut_tool: 再推定完了: 前景率 5.77% → 20.07%, 処理時間 0.971秒
+2026-06-13 19:05:24,713 INFO     core.grabcut_worker: GrabCut再推定完了 (request_id=15): 再推定回数=3, 処理時間=0.971秒
+2026-06-13 19:05:24,717 INFO     ui.main_window: 再推定完了 (第3回): 処理時間 0.97秒 | ヒント追加 or Enter=適用 / Esc=キャンセル
+2026-06-13 19:05:44,736 INFO     ui.main_window: GrabCut再推定リクエスト: request_id=16, ストローク数=2, 再推定=4回目
+2026-06-13 19:05:44,742 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=16, task=REFINE)
+2026-06-13 19:05:44,742 INFO     core.grabcut_worker: 再推定開始: ストローク数=2, 再推定回数=4 (request_id=16)
+2026-06-13 19:05:44,742 DEBUG    core.grabcut_tool: apply_hint_strokes: ストローク数=2, 前景ヒント~2px, 背景ヒント~0px
+2026-06-13 19:05:44,746 INFO     core.grabcut_tool: 再推定開始: 前景ヒント 10px, 背景ヒント 130569px, ストローク数 2, 再推定 4回目
+2026-06-13 19:05:45,743 INFO     core.grabcut_tool: 再推定完了: 前景率 5.77% → 20.05%, 処理時間 1.000秒
+2026-06-13 19:05:45,743 INFO     core.grabcut_worker: GrabCut再推定完了 (request_id=16): 再推定回数=4, 処理時間=1.000秒
+2026-06-13 19:05:45,748 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=16)
+2026-06-13 19:06:02,431 INFO     ui.main_window: GrabCutリクエスト受信: request_id=17, rect=(552, 387, 116, 155), mode=add
+2026-06-13 19:06:02,440 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=17, task=INITIAL)
+2026-06-13 19:06:02,440 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (552, 387, 116, 155), 反復 5
+2026-06-13 19:06:02,440 INFO     core.grabcut_tool: ROI: x=520 y=355 w=180 h=219
+2026-06-13 19:06:02,440 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 180x219, 矩形 (32,32,116,155), 反復 5
+2026-06-13 19:06:02,525 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 180x219, 前景率 0.13%, 処理時間 0.085秒
+2026-06-13 19:06:02,525 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=17): 処理時間 0.085秒, 縮小率 1.0000
+2026-06-13 19:06:02,529 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=17)
+2026-06-13 19:06:05,652 INFO     ui.main_window: GrabCutリクエスト受信: request_id=18, rect=(437, 375, 248, 263), mode=add
+2026-06-13 19:06:05,669 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=18, task=INITIAL)
+2026-06-13 19:06:05,669 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (437, 375, 248, 263), 反復 5
+2026-06-13 19:06:05,669 INFO     core.grabcut_tool: ROI: x=405 y=343 w=312 h=327
+2026-06-13 19:06:05,669 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 312x327, 矩形 (32,32,248,263), 反復 5
+2026-06-13 19:06:05,966 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 312x327, 前景率 17.41%, 処理時間 0.297秒
+2026-06-13 19:06:05,966 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=18): 処理時間 0.297秒, 縮小率 1.0000
+2026-06-13 19:06:05,971 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=18)
+2026-06-13 19:06:09,834 INFO     ui.main_window: GrabCutリクエスト受信: request_id=19, rect=(308, 312, 366, 310), mode=add
+2026-06-13 19:06:09,848 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=19, task=INITIAL)
+2026-06-13 19:06:09,849 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (308, 312, 366, 310), 反復 5
+2026-06-13 19:06:09,849 INFO     core.grabcut_tool: ROI: x=272 y=280 w=438 h=374
+2026-06-13 19:06:09,850 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 438x374, 矩形 (36,32,366,310), 反復 5
+2026-06-13 19:06:11,987 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 438x374, 前景率 17.81%, 処理時間 2.138秒
+2026-06-13 19:06:11,987 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=19): 処理時間 2.138秒, 縮小率 1.0000
+2026-06-13 19:06:11,992 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 438x374 | 処理 438x374 | 縮小率 1.000 | 処理時間 2.14秒
+2026-06-13 19:06:19,760 INFO     ui.main_window: GrabCut再推定リクエスト: request_id=20, ストローク数=4, 再推定=1回目
+2026-06-13 19:06:19,775 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=20, task=REFINE)
+2026-06-13 19:06:19,775 INFO     core.grabcut_worker: 再推定開始: ストローク数=4, 再推定回数=1 (request_id=20)
+2026-06-13 19:06:19,775 DEBUG    core.grabcut_tool: apply_hint_strokes: ストローク数=4, 前景ヒント~6px, 背景ヒント~0px
+2026-06-13 19:06:19,777 INFO     core.grabcut_tool: 再推定開始: 前景ヒント 26px, 背景ヒント 111455px, ストローク数 4, 再推定 1回目
+2026-06-13 19:06:20,012 INFO     core.grabcut_tool: 再推定完了: 前景率 3.17% → 16.03%, 処理時間 0.237秒
+2026-06-13 19:06:20,013 INFO     core.grabcut_worker: GrabCut再推定完了 (request_id=20): 再推定回数=1, 処理時間=0.237秒
+2026-06-13 19:06:20,017 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=20)
+2026-06-13 19:06:24,782 INFO     ui.main_window: GrabCutリクエスト受信: request_id=21, rect=(590, 388, 99, 149), mode=add
+2026-06-13 19:06:24,799 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=21, task=INITIAL)
+2026-06-13 19:06:24,800 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (590, 388, 99, 149), 反復 5
+2026-06-13 19:06:24,800 INFO     core.grabcut_tool: ROI: x=558 y=356 w=163 h=213
+2026-06-13 19:06:24,800 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 163x213, 矩形 (32,32,99,149), 反復 5
+2026-06-13 19:06:24,875 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 163x213, 前景率 4.57%, 処理時間 0.076秒
+2026-06-13 19:06:24,875 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=21): 処理時間 0.076秒, 縮小率 1.0000
+2026-06-13 19:06:24,879 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=21)
+2026-06-13 19:06:26,264 INFO     ui.main_window: GrabCutリクエスト受信: request_id=22, rect=(423, 369, 274, 267), mode=add
+2026-06-13 19:06:26,272 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=22, task=INITIAL)
+2026-06-13 19:06:26,273 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (423, 369, 274, 267), 反復 5
+2026-06-13 19:06:26,273 INFO     core.grabcut_tool: ROI: x=391 y=337 w=338 h=331
+2026-06-13 19:06:26,273 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 338x331, 矩形 (32,32,274,267), 反復 5
+2026-06-13 19:06:27,144 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 338x331, 前景率 30.27%, 処理時間 0.872秒
+2026-06-13 19:06:27,144 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=22): 処理時間 0.872秒, 縮小率 1.0000
+2026-06-13 19:06:27,148 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=22)
+2026-06-13 19:06:52,583 INFO     ui.main_window: GrabCutリクエスト受信: request_id=23, rect=(659, 367, 231, 119), mode=add
+2026-06-13 19:06:52,591 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=23, task=INITIAL)
+2026-06-13 19:06:52,592 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (659, 367, 231, 119), 反復 5
+2026-06-13 19:06:52,592 INFO     core.grabcut_tool: ROI: x=627 y=335 w=295 h=183
+2026-06-13 19:06:52,592 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 295x183, 矩形 (32,32,231,119), 反復 5
+2026-06-13 19:06:52,754 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 295x183, 前景率 9.63%, 処理時間 0.163秒
+2026-06-13 19:06:52,754 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=23): 処理時間 0.163秒, 縮小率 1.0000
+2026-06-13 19:06:52,759 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=23)
+2026-06-13 19:06:57,105 INFO     ui.main_window: GrabCutリクエスト受信: request_id=24, rect=(743, 402, 136, 95), mode=add
+2026-06-13 19:06:57,112 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=24, task=INITIAL)
+2026-06-13 19:06:57,112 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (743, 402, 136, 95), 反復 5
+2026-06-13 19:06:57,112 INFO     core.grabcut_tool: ROI: x=711 y=370 w=200 h=159
+2026-06-13 19:06:57,113 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 200x159, 矩形 (32,32,136,95), 反復 5
+2026-06-13 19:06:57,170 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 200x159, 前景率 7.52%, 処理時間 0.058秒
+2026-06-13 19:06:57,171 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=24): 処理時間 0.058秒, 縮小率 1.0000
+2026-06-13 19:06:57,176 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=24)
+2026-06-13 19:07:00,422 INFO     ui.main_window: GrabCutリクエスト受信: request_id=25, rect=(102, 127, 200, 241), mode=add
+2026-06-13 19:07:00,429 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=25, task=INITIAL)
+2026-06-13 19:07:00,430 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (102, 127, 200, 241), 反復 5
+2026-06-13 19:07:00,430 INFO     core.grabcut_tool: ROI: x=70 y=95 w=264 h=305
+2026-06-13 19:07:00,430 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 264x305, 矩形 (32,32,200,241), 反復 5
+2026-06-13 19:07:00,786 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 264x305, 前景率 11.32%, 処理時間 0.357秒
+2026-06-13 19:07:00,787 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=25): 処理時間 0.357秒, 縮小率 1.0000
+2026-06-13 19:07:00,790 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 264x305 | 処理 264x305 | 縮小率 1.000 | 処理時間 0.36秒
+2026-06-13 19:07:05,228 INFO     ui.main_window: GrabCutリクエスト受信: request_id=26, rect=(51, 310, 231, 205), mode=add
+2026-06-13 19:07:05,235 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=26, task=INITIAL)
+2026-06-13 19:07:05,235 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (51, 310, 231, 205), 反復 5
+2026-06-13 19:07:05,236 INFO     core.grabcut_tool: ROI: x=19 y=278 w=295 h=269
+2026-06-13 19:07:05,236 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 295x269, 矩形 (32,32,231,205), 反復 5
+2026-06-13 19:07:05,754 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 295x269, 前景率 18.79%, 処理時間 0.519秒
+2026-06-13 19:07:05,755 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=26): 処理時間 0.519秒, 縮小率 1.0000
+2026-06-13 19:07:05,759 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 295x269 | 処理 295x269 | 縮小率 1.000 | 処理時間 0.52秒
+2026-06-13 19:07:16,534 INFO     ui.main_window: GrabCutリクエスト受信: request_id=27, rect=(131, 5, 432, 349), mode=add
+2026-06-13 19:07:16,548 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=27, task=INITIAL)
+2026-06-13 19:07:16,549 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (131, 5, 432, 349), 反復 5
+2026-06-13 19:07:16,549 INFO     core.grabcut_tool: ROI: x=88 y=0 w=518 h=388
+2026-06-13 19:07:16,549 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 518x388, 矩形 (43,5,432,349), 反復 5
+2026-06-13 19:07:18,668 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 518x388, 前景率 45.68%, 処理時間 2.120秒
+2026-06-13 19:07:18,668 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=27): 処理時間 2.120秒, 縮小率 1.0000
+2026-06-13 19:07:18,672 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=27)
+2026-06-13 19:07:25,554 INFO     ui.main_window: GrabCutリクエスト受信: request_id=28, rect=(23, 64, 371, 407), mode=add
+2026-06-13 19:07:25,560 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=28, task=INITIAL)
+2026-06-13 19:07:25,561 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (23, 64, 371, 407), 反復 5
+2026-06-13 19:07:25,561 INFO     core.grabcut_tool: ROI: x=0 y=24 w=431 h=487
+2026-06-13 19:07:25,561 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 431x487, 矩形 (23,40,371,407), 反復 5
+2026-06-13 19:07:27,610 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 431x487, 前景率 38.51%, 処理時間 2.050秒
+2026-06-13 19:07:27,611 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=28): 処理時間 2.050秒, 縮小率 1.0000
+2026-06-13 19:07:27,615 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 431x487 | 処理 431x487 | 縮小率 1.000 | 処理時間 2.05秒
+2026-06-13 19:07:36,345 INFO     ui.main_window: GrabCut再推定リクエスト: request_id=29, ストローク数=3, 再推定=1回目
+2026-06-13 19:07:36,352 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=29, task=REFINE)
+2026-06-13 19:07:36,352 INFO     core.grabcut_worker: 再推定開始: ストローク数=3, 再推定回数=1 (request_id=29)
+2026-06-13 19:07:36,352 DEBUG    core.grabcut_tool: apply_hint_strokes: ストローク数=3, 前景ヒント~0px, 背景ヒント~11px
+2026-06-13 19:07:36,356 INFO     core.grabcut_tool: 再推定開始: 前景ヒント 0px, 背景ヒント 58998px, ストローク数 3, 再推定 1回目
+2026-06-13 19:07:36,356 WARNING  core.grabcut_tool: 前景ヒントがありません
+2026-06-13 19:07:37,620 INFO     core.grabcut_tool: 再推定完了: 前景率 8.77% → 38.08%, 処理時間 1.267秒
+2026-06-13 19:07:37,620 INFO     core.grabcut_worker: GrabCut再推定完了 (request_id=29): 再推定回数=1, 処理時間=1.267秒
+2026-06-13 19:07:37,624 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=29)
+2026-06-13 19:07:43,550 INFO     ui.main_window: GrabCutリクエスト受信: request_id=30, rect=(48, 112, 206, 376), mode=add
+2026-06-13 19:07:43,556 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=30, task=INITIAL)
+2026-06-13 19:07:43,556 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (48, 112, 206, 376), 反復 5
+2026-06-13 19:07:43,556 INFO     core.grabcut_tool: ROI: x=16 y=75 w=270 h=450
+2026-06-13 19:07:43,557 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 270x450, 矩形 (32,37,206,376), 反復 5
+2026-06-13 19:07:44,339 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 270x450, 前景率 25.19%, 処理時間 0.783秒
+2026-06-13 19:07:44,339 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=30): 処理時間 0.783秒, 縮小率 1.0000
+2026-06-13 19:07:44,343 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=30)
+2026-06-13 19:07:47,789 INFO     ui.main_window: GrabCutリクエスト受信: request_id=31, rect=(27, 101, 232, 468), mode=add
+2026-06-13 19:07:47,798 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=31, task=INITIAL)
+2026-06-13 19:07:47,799 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (27, 101, 232, 468), 反復 5
+2026-06-13 19:07:47,799 INFO     core.grabcut_tool: ROI: x=0 y=55 w=291 h=560
+2026-06-13 19:07:47,799 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 291x560, 矩形 (27,46,232,468), 反復 5
+2026-06-13 19:07:48,404 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 291x560, 前景率 34.51%, 処理時間 0.605秒
+2026-06-13 19:07:48,404 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=31): 処理時間 0.605秒, 縮小率 1.0000
+2026-06-13 19:07:48,408 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=31)
+2026-06-13 19:07:51,381 INFO     ui.main_window: GrabCutリクエスト受信: request_id=32, rect=(24, 311, 232, 182), mode=add
+2026-06-13 19:07:51,398 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=32, task=INITIAL)
+2026-06-13 19:07:51,399 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (24, 311, 232, 182), 反復 5
+2026-06-13 19:07:51,399 INFO     core.grabcut_tool: ROI: x=0 y=279 w=288 h=246
+2026-06-13 19:07:51,399 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 288x246, 矩形 (24,32,232,182), 反復 5
+2026-06-13 19:07:51,665 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 288x246, 前景率 10.00%, 処理時間 0.267秒
+2026-06-13 19:07:51,665 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=32): 処理時間 0.267秒, 縮小率 1.0000
+2026-06-13 19:07:51,670 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 288x246 | 処理 288x246 | 縮小率 1.000 | 処理時間 0.27秒
+2026-06-13 19:07:53,709 INFO     ui.main_window: GrabCutリクエスト受信: request_id=33, rect=(35, 311, 226, 112), mode=add
+2026-06-13 19:07:53,715 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=33, task=INITIAL)
+2026-06-13 19:07:53,716 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (35, 311, 226, 112), 反復 5
+2026-06-13 19:07:53,716 INFO     core.grabcut_tool: ROI: x=3 y=279 w=290 h=176
+2026-06-13 19:07:53,716 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 290x176, 矩形 (32,32,226,112), 反復 5
+2026-06-13 19:07:53,816 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=33): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:07:53,821 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:07:59,022 INFO     ui.main_window: GrabCutリクエスト受信: request_id=34, rect=(16, 108, 287, 421), mode=add
+2026-06-13 19:07:59,034 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=34, task=INITIAL)
+2026-06-13 19:07:59,035 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (16, 108, 287, 421), 反復 5
+2026-06-13 19:07:59,035 INFO     core.grabcut_tool: ROI: x=0 y=66 w=335 h=505
+2026-06-13 19:07:59,035 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 335x505, 矩形 (16,42,287,421), 反復 5
+2026-06-13 19:08:00,129 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 335x505, 前景率 43.91%, 処理時間 1.095秒
+2026-06-13 19:08:00,129 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=34): 処理時間 1.095秒, 縮小率 1.0000
+2026-06-13 19:08:00,133 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 335x505 | 処理 335x505 | 縮小率 1.000 | 処理時間 1.09秒
+2026-06-13 19:08:07,781 INFO     ui.main_window: GrabCutリクエスト受信: request_id=35, rect=(88, 244, 236, 226), mode=remove
+2026-06-13 19:08:07,788 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=35, task=INITIAL)
+2026-06-13 19:08:07,788 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (88, 244, 236, 226), 反復 5
+2026-06-13 19:08:07,788 INFO     core.grabcut_tool: ROI: x=56 y=212 w=300 h=290
+2026-06-13 19:08:07,789 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 300x290, 矩形 (32,32,236,226), 反復 5
+2026-06-13 19:08:08,702 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 300x290, 前景率 31.57%, 処理時間 0.914秒
+2026-06-13 19:08:08,703 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=35): 処理時間 0.914秒, 縮小率 1.0000
+2026-06-13 19:08:08,707 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 300x290 | 処理 300x290 | 縮小率 1.000 | 処理時間 0.91秒
+2026-06-13 19:08:11,760 INFO     ui.main_window: GrabCutリクエスト受信: request_id=36, rect=(151, 291, 154, 145), mode=remove
+2026-06-13 19:08:11,770 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=36, task=INITIAL)
+2026-06-13 19:08:11,771 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (151, 291, 154, 145), 反復 5
+2026-06-13 19:08:11,771 INFO     core.grabcut_tool: ROI: x=119 y=259 w=218 h=209
+2026-06-13 19:08:11,771 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 218x209, 矩形 (32,32,154,145), 反復 5
+2026-06-13 19:08:11,896 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=36): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:08:11,900 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:08:15,169 INFO     ui.main_window: GrabCutリクエスト受信: request_id=37, rect=(124, 267, 200, 192), mode=remove
+2026-06-13 19:08:15,183 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=37, task=INITIAL)
+2026-06-13 19:08:15,184 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (124, 267, 200, 192), 反復 5
+2026-06-13 19:08:15,184 INFO     core.grabcut_tool: ROI: x=92 y=235 w=264 h=256
+2026-06-13 19:08:15,184 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 264x256, 矩形 (32,32,200,192), 反復 5
+2026-06-13 19:08:16,239 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 264x256, 前景率 19.53%, 処理時間 1.056秒
+2026-06-13 19:08:16,239 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=37): 処理時間 1.056秒, 縮小率 1.0000
+2026-06-13 19:08:16,243 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 264x256 | 処理 264x256 | 縮小率 1.000 | 処理時間 1.06秒
+2026-06-13 19:08:24,079 INFO     ui.main_window: GrabCutリクエスト受信: request_id=38, rect=(155, 277, 188, 132), mode=remove
+2026-06-13 19:08:24,092 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=38, task=INITIAL)
+2026-06-13 19:08:24,093 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (155, 277, 188, 132), 反復 5
+2026-06-13 19:08:24,093 INFO     core.grabcut_tool: ROI: x=123 y=245 w=252 h=196
+2026-06-13 19:08:24,094 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 252x196, 矩形 (32,32,188,132), 反復 5
+2026-06-13 19:08:24,234 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=38): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:08:24,244 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:08:51,792 INFO     ui.main_window: GrabCutリクエスト受信: request_id=39, rect=(124, 271, 133, 158), mode=remove
+2026-06-13 19:08:51,799 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=39, task=INITIAL)
+2026-06-13 19:08:51,799 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (124, 271, 133, 158), 反復 5
+2026-06-13 19:08:51,800 INFO     core.grabcut_tool: ROI: x=92 y=239 w=197 h=222
+2026-06-13 19:08:51,800 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 197x222, 矩形 (32,32,133,158), 反復 5
+2026-06-13 19:08:51,888 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=39): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:08:51,932 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:08:55,155 INFO     ui.main_window: GrabCutリクエスト受信: request_id=40, rect=(124, 284, 253, 196), mode=remove
+2026-06-13 19:08:55,162 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=40, task=INITIAL)
+2026-06-13 19:08:55,163 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (124, 284, 253, 196), 反復 5
+2026-06-13 19:08:55,163 INFO     core.grabcut_tool: ROI: x=92 y=252 w=317 h=260
+2026-06-13 19:08:55,163 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 317x260, 矩形 (32,32,253,196), 反復 5
+2026-06-13 19:08:56,107 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 317x260, 前景率 20.72%, 処理時間 0.944秒
+2026-06-13 19:08:56,107 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=40): 処理時間 0.944秒, 縮小率 1.0000
+2026-06-13 19:08:56,112 INFO     ui.main_window: 古いGrabCut結果を破棄 (request_id=-1, current=40)
+2026-06-13 19:08:59,961 INFO     ui.main_window: GrabCutリクエスト受信: request_id=41, rect=(138, 303, 166, 139), mode=remove
+2026-06-13 19:08:59,968 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=41, task=INITIAL)
+2026-06-13 19:08:59,968 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (138, 303, 166, 139), 反復 5
+2026-06-13 19:08:59,969 INFO     core.grabcut_tool: ROI: x=106 y=271 w=230 h=203
+2026-06-13 19:08:59,969 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 230x203, 矩形 (32,32,166,139), 反復 5
+2026-06-13 19:09:00,092 WARNING  core.grabcut_worker: GrabCut ValueError (request_id=41): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:09:00,102 WARNING  ui.main_window: GrabCutエラー (初回): GrabCutに前景候補が見つかりませんでした。別の範囲を指定してください。
+2026-06-13 19:09:05,301 INFO     ui.main_window: GrabCutリクエスト受信: request_id=42, rect=(78, 261, 294, 215), mode=remove
+2026-06-13 19:09:05,309 INFO     core.grabcut_worker: GrabCutWorker 開始 (request_id=42, task=INITIAL)
+2026-06-13 19:09:05,309 INFO     core.grabcut_tool: GrabCutSession生成開始: 元画像 960x960, 矩形 (78, 261, 294, 215), 反復 5
+2026-06-13 19:09:05,309 INFO     core.grabcut_tool: ROI: x=46 y=229 w=358 h=279
+2026-06-13 19:09:05,309 INFO     core.grabcut_tool: GrabCut実行: 処理解像度 358x279, 矩形 (32,32,294,215), 反復 5
+2026-06-13 19:09:06,284 INFO     core.grabcut_tool: GrabCutSession生成完了: 縮小率 1.0000, 処理解像度 358x279, 前景率 20.02%, 処理時間 0.975秒
+2026-06-13 19:09:06,285 INFO     core.grabcut_worker: GrabCutWorker 完了 (request_id=42): 処理時間 0.975秒, 縮小率 1.0000
+2026-06-13 19:09:06,288 INFO     ui.main_window: GrabCut完了: 元画像 960x960 | ROI 358x279 | 処理 358x279 | 縮小率 1.000 | 処理時間 0.98秒
