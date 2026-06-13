@@ -70,8 +70,8 @@ def test_pending_gc_apply_updates_mask(qtbot, monkeypatch):
     result = win._resolve_pending_grabcut_session("テスト")
 
     assert result is True
-    # マスクが変化している (プレビューが適用された)
-    assert not np.array_equal(win._editor.mask, initial_mask) or True  # apply が呼ばれた
+    # プレビュー適用でマスクが変化している
+    assert not np.array_equal(win._editor.mask, initial_mask)
     # GrabCut状態がIDLEに戻っている
     assert win._canvas.gc_ui_state == GrabCutUiState.IDLE
 
