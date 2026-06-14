@@ -1,2 +1,21 @@
-colmap_mask_editor\core\__pycache__\
+# Python キャッシュ
+__pycache__/
 *.pyc
+
+# ----- v0.6 SAM 2 / AIセグメンテーション -----
+# SAM 2 公式ソース (external/sam2 へ clone するが、本リポジトリにはコミットしない)
+external/sam2/
+
+# SAM 2 モデルチェックポイント (容量が大きいためコミットしない)
+models/sam2/*.pt
+models/sam2/*.pth
+models/sam2/*.ckpt
+
+# SAM Worker のランタイム一時ファイル / キャッシュ
+sam_runtime/
+sam_cache/
+*.npz
+
+# 環境診断・検証・ベンチマークの出力
+logs/
+.vscode/

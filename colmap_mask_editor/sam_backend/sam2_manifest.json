@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/facebookresearch/sam2.git",
+  "commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+  "verified": true,
+  "model_family": "sam2.1",
+  "default_model": "sam2.1_hiera_small",
+  "protocol_version": 1,
+  "_note": "commit は実機 (RTX 4090 + CUDA Toolkit + VS2022) で scripts/setup_sam2_cuda_windows.ps1 を実行し、CUDA拡張ビルド・ロード・推論スモークテストが成功したコミットSHAを記録すること。verified=true は検証完了後にセットアップスクリプトが書き込む。GUIプロセスはこのファイルを読まない (Workerプロセスのみ参照)。"
+}

@@ -48,6 +48,9 @@ from core.project_loader import ImageEntry, ProjectInfo, load_project
 from core.version import APP_DISPLAY_NAME
 from ui.image_canvas import EditMode, GrabCutUiState, ImageCanvas
 from ui.image_list_panel import ImageListPanel
+from ai import model_registry
+from ai.ai_session import AiSession, AiUiState
+from ai.ai_mask_ops import APPLY_ADD, APPLY_EXCLUDE, APPLY_REPLACE, apply_ai_mask
 
 _log = logging.getLogger(__name__)
 
@@ -60,10 +63,25 @@ _GC_STATE_TEXT: "dict[GrabCutUiState, tuple[str, str]]" = {
     GrabCutUiState.REFINE_RUNNING:  ("GrabCut: 再推定中...", "#ffd700"),
 }
 
-# タブインデックス定数
+# タブインデックス定数 (v0.6: AIセグメントタブを追加し4タブ構成)
 _TAB_EDIT = 0
 _TAB_GRABCUT = 1
-_TAB_SAVE = 2
+_TAB_AI = 2
+_TAB_SAVE = 3
+
+# AI UI状態ごとの表示テキストと色
+_AI_STATE_TEXT: "dict[AiUiState, tuple[str, str]]" = {
+    AiUiState.DISABLED:        ("AI: 無効",         "#aaa"),
+    AiUiState.WORKER_STARTING: ("AI: Worker起動中", "#ffd700"),
+    AiUiState.WORKER_READY:    ("AI: Worker準備完了", "#4af"),
+    AiUiState.MODEL_LOADING:   ("AI: モデル読込中", "#ffd700"),
+    AiUiState.MODEL_READY:     ("AI: モデル準備完了", "#4f8"),
+    AiUiState.IMAGE_ENCODING:  ("AI: 画像解析中",   "#ffd700"),
+    AiUiState.PROMPT_EDITING:  ("AI: プロンプト編集", "#4f8"),
+    AiUiState.PREDICTING:      ("AI: 推論中",       "#ffd700"),
+    AiUiState.PREVIEW:         ("AI: プレビュー",   "#4af"),
+    AiUiState.ERROR:           ("AI: エラー",       "#f55"),
+}
 
 
 class MainWindow(QMainWindow):
@@ -96,9 +114,16 @@ class MainWindow(QMainWindow):
         # 設定管理
         self._app_settings = AppSettings()
 
+        # v0.6 AIセグメンテーション セッション (この時点では Worker を起動しない)
+        self._ai_session = AiSession(
+            python_executable=self._app_settings.get_ai_python_executable()
+        )
+        self._ai_candidate_btns: list = []
+
         self._setup_menu()
         self._setup_central()
         self._setup_shortcuts()
+        self._wire_ai_session()
 
         # GrabCut状態をステータスバー右端に常時表示
         self._gc_state_label = QLabel("GrabCut: 待機中")
@@ -218,6 +243,12 @@ class MainWindow(QMainWindow):
         tab1_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         tab1_scroll.setWidget(self._build_grabcut_tab())
         self._right_tab_widget.addTab(tab1_scroll, "GrabCut")
+
+        tab_ai_scroll = QScrollArea()
+        tab_ai_scroll.setWidgetResizable(True)
+        tab_ai_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tab_ai_scroll.setWidget(self._build_ai_tab())
+        self._right_tab_widget.addTab(tab_ai_scroll, "AIセグメント")
 
         tab2_scroll = QScrollArea()
         tab2_scroll.setWidgetResizable(True)
@@ -845,13 +876,15 @@ class MainWindow(QMainWindow):
         if not folder:
             return
 
-        # 実行中Workerがあれば確認
+        # Phase 15 の解決順序
+        if not self._resolve_ai_running("プロジェクトを開く"):
+            return
         if not self._resolve_running_worker("プロジェクトを開く"):
             return
-        # 未確定GrabCutセッションがあれば確認
+        if not self._resolve_pending_ai_session("プロジェクトを開く"):
+            return
         if not self._resolve_pending_grabcut_session("プロジェクトを開く"):
             return
-        # 未保存マスクがあれば確認
         if not self._resolve_unsaved_mask("プロジェクトを開く"):
             return
 
@@ -881,19 +914,28 @@ class MainWindow(QMainWindow):
     def _on_image_selected(self, index: int) -> None:
         if index == self._current_index:
             return
-        # 1. 実行中Workerの解決
+        # Phase 15 の解決順序
+        # 1. AI推論実行中
+        if not self._resolve_ai_running("画像切替"):
+            self._list_panel.select_row(self._current_index)
+            return
+        # 2. GrabCut処理中
         if not self._resolve_running_worker("画像切替"):
             self._list_panel.select_row(self._current_index)
             return
-        # 2. 未確定GrabCutSessionの解決
+        # 3. AI未確定プレビュー/プロンプト
+        if not self._resolve_pending_ai_session("画像切替"):
+            self._list_panel.select_row(self._current_index)
+            return
+        # 4. 未確定GrabCutSession
         if not self._resolve_pending_grabcut_session("画像切替"):
             self._list_panel.select_row(self._current_index)
             return
-        # 3. 未保存通常マスクの解決
+        # 5. 未保存通常マスク
         if not self._resolve_unsaved_mask("画像切替"):
             self._list_panel.select_row(self._current_index)
             return
-        # 4. 画像切替
+        # 6. 画像切替
         self._gc_session = None
         self._select_image(index)
 
@@ -934,8 +976,12 @@ class MainWindow(QMainWindow):
 
         self._editor = MaskEditor(mask)
         self._gc_session = None
+        # AIセッションの画像状態を無効化 (Embeddingは次にAIを使うときに再生成)
+        self._ai_session.invalidate_image()
         self._canvas.set_image(img)
         self._canvas.set_editor(self._editor)
+        self._canvas.clear_ai_overlay()
+        self._reset_ai_candidate_buttons()
 
         self._list_panel.update_entry(index)
         self._update_title(entry)
@@ -1466,6 +1512,527 @@ class MainWindow(QMainWindow):
         self._hint_radius_spin.blockSignals(False)
         self._canvas.set_hint_radius(value)
 
+    # ================================================================== #
+    # v0.6 AIセグメンテーション (SAM 2.1)
+    # ================================================================== #
+
+    def _build_ai_tab(self) -> QWidget:
+        """AIセグメントタブ: 状態・モデル設定・プロンプト・候補・適用。"""
+        from PySide6.QtWidgets import QComboBox
+
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+        # ----- SAM 2 状態 -----
+        status_group = QGroupBox("SAM 2 状態")
+        sl = QVBoxLayout(status_group)
+        sl.setSpacing(2)
+
+        def _info_label() -> QLabel:
+            lbl = QLabel("—")
+            lbl.setStyleSheet("font-size: 11px;")
+            lbl.setWordWrap(True)
+            return lbl
+
+        self._ai_status_label = _info_label()
+        self._ai_cuda_label = _info_label()
+        self._ai_ext_label = _info_label()
+        self._ai_gpu_label = _info_label()
+        self._ai_model_label = _info_label()
+        self._ai_vram_label = _info_label()
+        for cap, lbl in [
+            ("Worker状態:", self._ai_status_label),
+            ("CUDA:", self._ai_cuda_label),
+            ("CUDA拡張:", self._ai_ext_label),
+            ("GPU:", self._ai_gpu_label),
+            ("モデル:", self._ai_model_label),
+            ("VRAM:", self._ai_vram_label),
+        ]:
+            row = QHBoxLayout()
+            c = QLabel(cap)
+            c.setStyleSheet("font-size: 10px; color: #aaa;")
+            c.setMinimumWidth(64)
+            row.addWidget(c)
+            row.addWidget(lbl, stretch=1)
+            sl.addLayout(row)
+
+        worker_btn_row = QHBoxLayout()
+        self._btn_ai_start_worker = QPushButton("Worker起動")
+        self._btn_ai_start_worker.clicked.connect(self._on_ai_start_worker)
+        worker_btn_row.addWidget(self._btn_ai_start_worker)
+        self._btn_ai_restart_worker = QPushButton("Worker再起動")
+        self._btn_ai_restart_worker.clicked.connect(self._on_ai_restart_worker)
+        worker_btn_row.addWidget(self._btn_ai_restart_worker)
+        sl.addLayout(worker_btn_row)
+
+        model_btn_row = QHBoxLayout()
+        self._btn_ai_load_model = QPushButton("モデル読込")
+        self._btn_ai_load_model.clicked.connect(self._on_ai_load_model)
+        model_btn_row.addWidget(self._btn_ai_load_model)
+        self._btn_ai_unload_model = QPushButton("モデル解放")
+        self._btn_ai_unload_model.clicked.connect(self._on_ai_unload_model)
+        model_btn_row.addWidget(self._btn_ai_unload_model)
+        sl.addLayout(model_btn_row)
+        layout.addWidget(status_group)
+
+        # ----- モデル設定 -----
+        model_group = QGroupBox("モデル設定")
+        ml = QVBoxLayout(model_group)
+        ml.addWidget(QLabel("モデル:"))
+        self._ai_model_combo = QComboBox()
+        for info in model_registry.all_models():
+            self._ai_model_combo.addItem(info.display_name, info.model_id)
+        ml.addWidget(self._ai_model_combo)
+
+        ml.addWidget(QLabel("精度:"))
+        self._ai_precision_combo = QComboBox()
+        for p in model_registry.PRECISIONS:
+            self._ai_precision_combo.addItem(p, p)
+        ml.addWidget(self._ai_precision_combo)
+
+        ml.addWidget(QLabel("デバイス:"))
+        self._ai_device_combo = QComboBox()
+        self._ai_device_combo.setEditable(True)
+        self._ai_device_combo.addItems(["cuda:0", "cuda:1"])
+        ml.addWidget(self._ai_device_combo)
+
+        self._ai_checkpoint_label = QLabel("チェックポイント: —")
+        self._ai_checkpoint_label.setWordWrap(True)
+        self._ai_checkpoint_label.setStyleSheet("font-size: 10px; color: #aaa;")
+        ml.addWidget(self._ai_checkpoint_label)
+        layout.addWidget(model_group)
+
+        # ----- プロンプト -----
+        prompt_group = QGroupBox("プロンプト")
+        pl = QVBoxLayout(prompt_group)
+        prompt_btn_row = QHBoxLayout()
+        self._btn_ai_pos = QPushButton("正クリック")
+        self._btn_ai_pos.setToolTip("左クリックで対象点を追加 (緑+)")
+        self._btn_ai_pos.clicked.connect(lambda: self._enter_ai_prompt_mode(0))
+        prompt_btn_row.addWidget(self._btn_ai_pos)
+        self._btn_ai_neg = QPushButton("負クリック")
+        self._btn_ai_neg.setToolTip("右クリックで背景点を追加 (赤-)")
+        self._btn_ai_neg.clicked.connect(lambda: self._enter_ai_prompt_mode(1))
+        prompt_btn_row.addWidget(self._btn_ai_neg)
+        self._btn_ai_box = QPushButton("矩形")
+        self._btn_ai_box.setToolTip("左ドラッグで矩形を指定")
+        self._btn_ai_box.clicked.connect(lambda: self._enter_ai_prompt_mode(2))
+        prompt_btn_row.addWidget(self._btn_ai_box)
+        pl.addLayout(prompt_btn_row)
+
+        prompt_hist_row = QHBoxLayout()
+        self._btn_ai_prompt_undo = QPushButton("Undo")
+        self._btn_ai_prompt_undo.clicked.connect(self._on_ai_prompt_undo)
+        prompt_hist_row.addWidget(self._btn_ai_prompt_undo)
+        self._btn_ai_prompt_redo = QPushButton("Redo")
+        self._btn_ai_prompt_redo.clicked.connect(self._on_ai_prompt_redo)
+        prompt_hist_row.addWidget(self._btn_ai_prompt_redo)
+        self._btn_ai_prompt_clear = QPushButton("全消去")
+        self._btn_ai_prompt_clear.clicked.connect(self._on_ai_prompt_clear)
+        prompt_hist_row.addWidget(self._btn_ai_prompt_clear)
+        pl.addLayout(prompt_hist_row)
+
+        self._btn_ai_predict = QPushButton("推論実行")
+        self._btn_ai_predict.setStyleSheet(
+            "QPushButton { background: #46a; color: white; font-weight: bold; }"
+        )
+        self._btn_ai_predict.clicked.connect(self._on_ai_predict)
+        pl.addWidget(self._btn_ai_predict)
+        layout.addWidget(prompt_group)
+
+        # ----- 候補マスク -----
+        cand_group = QGroupBox("候補マスク")
+        cl = QVBoxLayout(cand_group)
+        self._ai_candidate_btns = []
+        self._ai_candidate_labels = []
+        for i in range(3):
+            row = QHBoxLayout()
+            btn = QPushButton(f"候補{i + 1}")
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda _checked=False, idx=i: self._select_ai_candidate(idx))
+            row.addWidget(btn)
+            lbl = QLabel("—")
+            lbl.setStyleSheet("font-size: 10px; color: #aaa;")
+            row.addWidget(lbl, stretch=1)
+            cl.addLayout(row)
+            self._ai_candidate_btns.append(btn)
+            self._ai_candidate_labels.append(lbl)
+        layout.addWidget(cand_group)
+
+        # ----- 適用 -----
+        apply_group = QGroupBox("適用")
+        al = QVBoxLayout(apply_group)
+        apply_row = QHBoxLayout()
+        self._btn_ai_apply_add = QPushButton("追加")
+        self._btn_ai_apply_add.setStyleSheet("QPushButton { background: #2a6; color: white; }")
+        self._btn_ai_apply_add.clicked.connect(lambda: self._apply_ai(APPLY_ADD))
+        apply_row.addWidget(self._btn_ai_apply_add)
+        self._btn_ai_apply_exclude = QPushButton("除外")
+        self._btn_ai_apply_exclude.clicked.connect(lambda: self._apply_ai(APPLY_EXCLUDE))
+        apply_row.addWidget(self._btn_ai_apply_exclude)
+        self._btn_ai_apply_replace = QPushButton("置換")
+        self._btn_ai_apply_replace.clicked.connect(lambda: self._apply_ai(APPLY_REPLACE))
+        apply_row.addWidget(self._btn_ai_apply_replace)
+        al.addLayout(apply_row)
+        self._btn_ai_cancel = QPushButton("キャンセル")
+        self._btn_ai_cancel.clicked.connect(self._on_ai_cancel)
+        al.addWidget(self._btn_ai_cancel)
+        layout.addWidget(apply_group)
+
+        layout.addStretch()
+        return widget
+
+    # ------------------------------------------------------------------ #
+    # AIシグナル接続・状態
+    # ------------------------------------------------------------------ #
+
+    def _wire_ai_session(self) -> None:
+        s = self._ai_session
+        s.state_changed.connect(self._on_ai_state_changed)
+        s.worker_info.connect(self._on_ai_worker_info)
+        s.model_ready.connect(self._on_ai_model_ready)
+        s.prediction_ready.connect(self._on_ai_prediction_ready)
+        s.candidate_changed.connect(lambda _i: self._refresh_ai_overlay())
+        s.error.connect(self._on_ai_error)
+        s.cuda_extension_unavailable.connect(self._on_ai_cuda_ext_unavailable)
+        s.worker_unavailable.connect(self._on_ai_worker_unavailable)
+        s.log.connect(lambda line: _log.debug("[SAM worker] %s", line))
+
+        # キャンバスのプロンプト操作
+        self._canvas.ai_point_clicked.connect(self._on_canvas_ai_point)
+        self._canvas.ai_box_drawn.connect(self._on_canvas_ai_box)
+
+        # 初期パネル状態を反映
+        self._on_ai_state_changed(self._ai_session.state)
+
+    def _apply_ai_timeouts(self) -> None:
+        from ai import protocol
+        s = self._app_settings
+        self._ai_session.set_timeout(protocol.Command.HELLO,
+                                     s.get("ai/worker_start_timeout", 30) * 1000)
+        self._ai_session.set_timeout(protocol.Command.LOAD_MODEL,
+                                     s.get("ai/model_load_timeout", 180) * 1000)
+        self._ai_session.set_timeout(protocol.Command.SET_IMAGE,
+                                     s.get("ai/image_encode_timeout", 120) * 1000)
+        self._ai_session.set_timeout(protocol.Command.PREDICT,
+                                     s.get("ai/predict_timeout", 30) * 1000)
+
+    def _on_ai_state_changed(self, state) -> None:
+        text, color = _AI_STATE_TEXT.get(state, ("AI: 不明", "#aaa"))
+        if hasattr(self, "_ai_status_label"):
+            self._ai_status_label.setText(text.replace("AI: ", ""))
+            self._ai_status_label.setStyleSheet(f"font-size: 11px; color: {color};")
+        self._update_ai_controls(state)
+
+    def _update_ai_controls(self, state) -> None:
+        """AI状態に応じてボタンの有効/無効を一括更新する。"""
+        if not hasattr(self, "_btn_ai_start_worker"):
+            return
+        running = self._ai_session.is_worker_running()
+        model_ready = state in (
+            AiUiState.MODEL_READY, AiUiState.IMAGE_ENCODING,
+            AiUiState.PROMPT_EDITING, AiUiState.PREDICTING, AiUiState.PREVIEW,
+        )
+        can_prompt = state in (AiUiState.PROMPT_EDITING, AiUiState.PREVIEW, AiUiState.MODEL_READY)
+        has_preview = state == AiUiState.PREVIEW
+        predicting = state == AiUiState.PREDICTING
+
+        self._btn_ai_start_worker.setEnabled(not running)
+        self._btn_ai_restart_worker.setEnabled(running or state == AiUiState.ERROR)
+        self._btn_ai_load_model.setEnabled(running and state in (
+            AiUiState.WORKER_READY, AiUiState.MODEL_READY, AiUiState.PROMPT_EDITING,
+            AiUiState.PREVIEW,
+        ))
+        self._btn_ai_unload_model.setEnabled(model_ready and not predicting)
+
+        for w in (self._btn_ai_pos, self._btn_ai_neg, self._btn_ai_box,
+                  self._btn_ai_prompt_undo, self._btn_ai_prompt_redo,
+                  self._btn_ai_prompt_clear, self._btn_ai_predict):
+            w.setEnabled(can_prompt and not predicting)
+
+        for btn in self._ai_candidate_btns:
+            btn.setEnabled(has_preview)
+        for w in (self._btn_ai_apply_add, self._btn_ai_apply_exclude,
+                  self._btn_ai_apply_replace):
+            w.setEnabled(has_preview)
+        self._btn_ai_cancel.setEnabled(has_preview or (can_prompt and self._ai_session.prompts.has_any()))
+
+    def _on_ai_worker_info(self, msg: dict) -> None:
+        self._ai_cuda_label.setText("利用可" if msg.get("cuda_available") else "不可")
+        ext = msg.get("cuda_extension_loaded")
+        self._ai_ext_label.setText("ロード済" if ext else "未ロード")
+        self._ai_ext_label.setStyleSheet(
+            "font-size: 11px; color: %s;" % ("#4f8" if ext else "#f55")
+        )
+        self._ai_gpu_label.setText(str(msg.get("gpu_name") or "—"))
+
+    def _on_ai_model_ready(self, msg: dict) -> None:
+        self._ai_model_label.setText(str(msg.get("model_id") or "—"))
+        vram = msg.get("vram_allocated_mb")
+        if vram is not None:
+            self._ai_vram_label.setText(f"{vram} MB")
+        self.statusBar().showMessage(f"AIモデルを読み込みました: {msg.get('model_id')}", 4000)
+
+    # ------------------------------------------------------------------ #
+    # AIボタンハンドラ
+    # ------------------------------------------------------------------ #
+
+    def _on_ai_start_worker(self) -> None:
+        if not self._app_settings.get("ai/enabled", True):
+            QMessageBox.information(self, "AI無効", "設定でAI機能が無効になっています。")
+            return
+        self._ai_session.set_python_executable(self._app_settings.get_ai_python_executable())
+        self._apply_ai_timeouts()
+        if not self._ai_session.start_worker():
+            self.statusBar().showMessage("Workerは既に起動しています", 3000)
+
+    def _on_ai_restart_worker(self) -> None:
+        self._apply_ai_timeouts()
+        self._canvas.clear_ai_overlay()
+        self._ai_session.restart_worker()
+
+    def _on_ai_load_model(self) -> None:
+        model_id = self._ai_model_combo.currentData()
+        ckpt_dir = self._app_settings.get_ai_checkpoint_dir()
+        ckpt = model_registry.checkpoint_path(ckpt_dir, model_id)
+        self._ai_checkpoint_label.setText(f"チェックポイント: {ckpt}")
+        if not ckpt.exists():
+            QMessageBox.warning(
+                self, "チェックポイントなし",
+                f"モデルファイルが見つかりません:\n{ckpt}\n\n"
+                "models/sam2/ にチェックポイントを配置してください。",
+            )
+            return
+        precision = self._ai_precision_combo.currentData()
+        device = self._ai_device_combo.currentText()
+        self._ai_session.load_model(model_id, str(ckpt), precision, device)
+
+    def _on_ai_unload_model(self) -> None:
+        self._canvas.clear_ai_overlay()
+        self._ai_session.unload_model()
+
+    def _enter_ai_prompt_mode(self, prompt_type: int) -> None:
+        """AIプロンプト編集モードへ入る。"""
+        self._app_settings.set("ai/last_prompt_type", prompt_type)
+        self._canvas.set_edit_mode(EditMode.AI_PROMPT)
+        self._canvas.set_ai_active(True)
+        self._right_tab_widget.setCurrentIndex(_TAB_AI)
+        self._ensure_ai_image()
+        msg = {0: "左クリックで対象点を追加", 1: "右クリックで背景点を追加",
+               2: "左ドラッグで矩形を指定"}.get(prompt_type, "")
+        self.statusBar().showMessage(f"AIプロンプト: {msg}", 4000)
+
+    def _ensure_ai_image(self) -> None:
+        """モデルがあり現在画像のEmbeddingが無ければ set_image を送る。"""
+        if (self._project is None or self._current_index < 0
+                or not self._ai_session.is_worker_running()):
+            return
+        if self._ai_session.needs_image_encoding():
+            entry = self._project.entries[self._current_index]
+            self._ai_session.set_image(str(entry.image_path))
+
+    def _on_canvas_ai_point(self, info: dict) -> None:
+        if self._ai_session.state not in (AiUiState.PROMPT_EDITING, AiUiState.PREVIEW,
+                                          AiUiState.MODEL_READY):
+            return
+        self._ensure_ai_image()
+        self._ai_session.prompts.add_point(info["x"], info["y"], info["positive"])
+        self._refresh_ai_overlay()
+        self._update_ai_controls(self._ai_session.state)
+        if self._app_settings.get("ai/auto_predict", False):
+            self._on_ai_predict()
+
+    def _on_canvas_ai_box(self, info: dict) -> None:
+        if self._ai_session.state not in (AiUiState.PROMPT_EDITING, AiUiState.PREVIEW,
+                                          AiUiState.MODEL_READY):
+            return
+        self._ensure_ai_image()
+        self._ai_session.prompts.set_box(info["x1"], info["y1"], info["x2"], info["y2"])
+        self._refresh_ai_overlay()
+        self._update_ai_controls(self._ai_session.state)
+        if self._app_settings.get("ai/auto_predict", False):
+            self._on_ai_predict()
+
+    def _on_ai_prompt_undo(self) -> None:
+        self._ai_session.prompts.undo()
+        self._refresh_ai_overlay()
+        self._update_ai_controls(self._ai_session.state)
+
+    def _on_ai_prompt_redo(self) -> None:
+        self._ai_session.prompts.redo()
+        self._refresh_ai_overlay()
+        self._update_ai_controls(self._ai_session.state)
+
+    def _on_ai_prompt_clear(self) -> None:
+        self._ai_session.prompts.clear()
+        self._refresh_ai_overlay()
+        self._update_ai_controls(self._ai_session.state)
+
+    def _on_ai_predict(self) -> None:
+        if self._ai_session.prompts.is_empty():
+            self.statusBar().showMessage("プロンプトを指定してください", 3000)
+            return
+        if self._ai_session.image_key is None:
+            # まだエンコードされていない: 画像設定 → image_ready 後はユーザーが再度実行
+            self._ensure_ai_image()
+            self.statusBar().showMessage("画像を解析中です。完了後に推論実行してください。", 4000)
+            return
+        self._ai_session.predict()
+
+    def _select_ai_candidate(self, index: int) -> None:
+        self._ai_session.select_candidate(index)
+        for i, btn in enumerate(self._ai_candidate_btns):
+            btn.setChecked(i == index)
+        self._refresh_ai_overlay()
+
+    def _on_ai_prediction_ready(self, result) -> None:
+        self._right_tab_widget.setCurrentIndex(_TAB_AI)
+        best = self._ai_session.selected_candidate_index
+        for i, btn in enumerate(self._ai_candidate_btns):
+            if i < result.mask_count:
+                c = result.candidates[i]
+                btn.setEnabled(True)
+                btn.setChecked(i == best)
+                self._ai_candidate_labels[i].setText(
+                    f"スコア {c.score:.3f} / {c.fg_ratio * 100:.1f}%"
+                )
+            else:
+                btn.setEnabled(False)
+                btn.setChecked(False)
+                self._ai_candidate_labels[i].setText("—")
+        self._refresh_ai_overlay()
+        self.statusBar().showMessage(
+            f"AI推論完了: {result.mask_count}候補 (最高スコア候補を選択中)", 5000
+        )
+
+    def _refresh_ai_overlay(self) -> None:
+        """プロンプトと選択候補マスクをキャンバスへ反映する。"""
+        pts = [(p.x, p.y, p.label) for p in self._ai_session.prompts.points]
+        box = None
+        if self._ai_session.prompts.box is not None:
+            b = self._ai_session.prompts.box
+            box = (b.x1, b.y1, b.x2, b.y2)
+        mask = self._ai_session.selected_mask()
+        self._canvas.set_ai_overlay(pts, box, mask)
+
+    def _apply_ai(self, mode: str) -> None:
+        """選択中のAI候補を通常マスクへ適用する (Undo対象)。"""
+        mask = self._ai_session.selected_mask()
+        if mask is None or self._editor is None:
+            return
+        if mask.shape[:2] != self._editor.mask.shape[:2]:
+            QMessageBox.warning(
+                self, "サイズ不一致",
+                "AI結果のサイズが現在のマスクと一致しません。",
+            )
+            return
+        self._editor.begin_stroke()
+        new_mask = apply_ai_mask(self._editor.mask, mask, mode)
+        self._editor.mask[:] = new_mask
+
+        self._ai_session.reset_after_apply()
+        self._canvas.clear_ai_overlay()
+        self._reset_ai_candidate_buttons()
+        self._on_mask_changed()
+        self._canvas.update()
+        label = {APPLY_ADD: "追加", APPLY_EXCLUDE: "除外", APPLY_REPLACE: "置換"}.get(mode, mode)
+        self.statusBar().showMessage(f"AI結果を{label}で適用しました", 3000)
+
+    def _on_ai_cancel(self) -> None:
+        self._ai_session.discard_preview()
+        self._ai_session.prompts.reset()
+        self._canvas.clear_ai_overlay()
+        self._reset_ai_candidate_buttons()
+        self.statusBar().showMessage("AIプレビューを破棄しました", 3000)
+
+    def _reset_ai_candidate_buttons(self) -> None:
+        for btn, lbl in zip(self._ai_candidate_btns, self._ai_candidate_labels):
+            btn.setChecked(False)
+            lbl.setText("—")
+
+    # ----- AIエラー/障害 -----
+
+    def _on_ai_error(self, error_code: str, message: str) -> None:
+        _log.warning("AIエラー: %s - %s", error_code, message)
+        self.statusBar().showMessage(f"AIエラー: {message}", 6000)
+
+    def _on_ai_cuda_ext_unavailable(self, message: str) -> None:
+        self._canvas.clear_ai_overlay()
+        QMessageBox.warning(
+            self, "SAM 2 CUDA拡張エラー",
+            "SAM 2 CUDA拡張を読み込めませんでした。\n\n"
+            "AIセグメンテーションは使用できません。\n"
+            "既存のブラシ・GrabCut・保存機能は引き続き使用できます。\n\n"
+            "環境診断またはCUDA拡張検証を実行してください。\n"
+            f"\n詳細: {message}",
+        )
+
+    def _on_ai_worker_unavailable(self, message: str) -> None:
+        self._canvas.clear_ai_overlay()
+        self._reset_ai_candidate_buttons()
+        self._ai_model_label.setText("—")
+        self._ai_vram_label.setText("—")
+        QMessageBox.warning(
+            self, "AI Workerエラー",
+            f"SAM Worker が利用できなくなりました。\n{message}\n\n"
+            "通常マスクは変更されていません。\n"
+            "「Worker再起動」で再試行できます。",
+        )
+
+    # ----- AI未確定状態の解決 (Phase 15) -----
+
+    def _resolve_ai_running(self, reason: str) -> bool:
+        """AI推論実行中の場合に確認する。続行可ならTrue。"""
+        if self._ai_session.state != AiUiState.PREDICTING:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("AI推論中")
+        box.setText(f"AI推論中です。\n中断して {reason} を続行しますか？")
+        cancel_btn = box.addButton("中断して続行", QMessageBox.ButtonRole.AcceptRole)
+        back_btn = box.addButton("戻る", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(back_btn)
+        box.exec()
+        if box.clickedButton() is cancel_btn:
+            self._ai_session.discard_preview()  # 結果が来ても破棄される
+            self._canvas.clear_ai_overlay()
+            return True
+        return False
+
+    def _resolve_pending_ai_session(self, reason: str) -> bool:
+        """AIプレビュー/プロンプトが残っている場合に確認する。続行可ならTrue。"""
+        if not self._ai_session.has_pending():
+            return True
+        result = self._ask_pending_ai()
+        _log.info("AI未確定確認結果: %s (reason=%s)", result, reason)
+        if result == "apply":
+            if self._ai_session.has_preview():
+                self._apply_ai(APPLY_ADD)
+            else:
+                self._on_ai_cancel()
+            return True
+        if result == "discard":
+            self._on_ai_cancel()
+            return True
+        return False
+
+    def _ask_pending_ai(self) -> str:
+        box = QMessageBox(self)
+        box.setWindowTitle("AI未確定")
+        box.setText("AIセグメンテーションの未確定結果があります。")
+        apply_btn = box.addButton("適用", QMessageBox.ButtonRole.AcceptRole)
+        discard_btn = box.addButton("破棄", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_btn = box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is apply_btn:
+            return "apply"
+        if clicked is discard_btn:
+            return "discard"
+        return "cancel"
+
     # ------------------------------------------------------------------ #
     # ウィンドウクローズ
     # ------------------------------------------------------------------ #
@@ -1473,6 +2040,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         # 遅延クローズの2回目 (Worker終了後に再呼び出しされた場合)
         if self._close_pending:
+            self._ai_session.shutdown()
             self._save_settings()
             event.accept()
             _log.info("アプリ終了 (遅延クローズ完了)")
@@ -1499,15 +2067,28 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
 
-        # 2. 未確定GrabCutSessionの確認
+        # 2. AI推論実行中の確認
+        if not self._resolve_ai_running("終了"):
+            event.ignore()
+            return
+
+        # 3. AI未確定プレビュー/プロンプトの確認
+        if not self._resolve_pending_ai_session("終了"):
+            event.ignore()
+            return
+
+        # 4. 未確定GrabCutSessionの確認
         if not self._resolve_pending_grabcut_session("終了"):
             event.ignore()
             return
 
-        # 3. 未保存マスクの確認
+        # 5. 未保存マスクの確認
         if not self._resolve_unsaved_mask("終了"):
             event.ignore()
             return
+
+        # AI Worker を確実に終了 (子プロセス/GPUメモリを残さない)
+        self._ai_session.shutdown()
 
         self._save_settings()
         event.accept()
@@ -1610,6 +2191,8 @@ class MainWindow(QMainWindow):
         """編集モードに応じてタブを自動切替する。"""
         if mode in (EditMode.GRABCUT_ADD, EditMode.GRABCUT_DEL, EditMode.GRABCUT_REPLACE):
             self._right_tab_widget.setCurrentIndex(_TAB_GRABCUT)
+        elif mode == EditMode.AI_PROMPT:
+            self._right_tab_widget.setCurrentIndex(_TAB_AI)
         elif mode in (
             EditMode.BRUSH, EditMode.RECT_ADD, EditMode.RECT_DEL,
             EditMode.POLY_ADD, EditMode.POLY_DEL,

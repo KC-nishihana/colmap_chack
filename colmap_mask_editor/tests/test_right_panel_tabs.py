@@ -23,11 +23,19 @@ def test_right_tab_widget_exists(qtbot):
     assert isinstance(win._right_tab_widget, QTabWidget)
 
 
-def test_tab_count_is_3(qtbot):
-    """タブが3つある"""
+def test_tab_count_is_4(qtbot):
+    """タブが4つある (v0.6: 編集/GrabCut/AIセグメント/保存・確認)"""
     win = MainWindow()
     qtbot.addWidget(win)
-    assert win._right_tab_widget.count() == 3
+    assert win._right_tab_widget.count() == 4
+
+
+def test_ai_tab_exists(qtbot):
+    """「AIセグメント」タブが存在する"""
+    win = MainWindow()
+    qtbot.addWidget(win)
+    labels = [win._right_tab_widget.tabText(i) for i in range(win._right_tab_widget.count())]
+    assert "AIセグメント" in labels
 
 
 def test_edit_tab_exists(qtbot):

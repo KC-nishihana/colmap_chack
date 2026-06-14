@@ -34,6 +34,7 @@ class EditMode(Enum):
     GRABCUT_ADD = auto()
     GRABCUT_DEL = auto()
     GRABCUT_REPLACE = auto()
+    AI_PROMPT = auto()   # v0.6: SAM2 プロンプト (正/負クリック・矩形)
     PAN = auto()
 
 
@@ -55,6 +56,7 @@ _MODE_LABEL = {
     EditMode.GRABCUT_ADD:    "GrabCut有効化",
     EditMode.GRABCUT_DEL:    "GrabCut除外",
     EditMode.GRABCUT_REPLACE:"GrabCut置換",
+    EditMode.AI_PROMPT:      "AIプロンプト",
     EditMode.PAN:            "パン操作",
 }
 
@@ -88,6 +90,10 @@ class ImageCanvas(QWidget):
 
     # UI状態変化通知 (MainWindowがパネルの有効/無効を更新するために使用)
     grabcut_state_changed = Signal(object)  # GrabCutUiState
+
+    # v0.6 AIプロンプト: クリック/矩形を元画像座標でMainWindowへ送る
+    ai_point_clicked = Signal(object)  # dict {"x":int,"y":int,"positive":bool}
+    ai_box_drawn = Signal(object)      # dict {"x1","y1","x2","y2"}
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -161,6 +167,17 @@ class ImageCanvas(QWidget):
         # 現在描画中のストローク
         self._gc_hint_drawing: bool = False
         self._gc_current_stroke_pts: list[tuple[int, int]] = []
+
+        # ----- v0.6 AIプロンプト表示状態 -----
+        self._ai_active: bool = False                 # AI_PROMPTモードか
+        self._ai_points: list[tuple[int, int, int]] = []  # (x, y, label) 元画像座標
+        self._ai_box: Optional[tuple[int, int, int, int]] = None
+        self._ai_preview_mask: Optional[np.ndarray] = None  # 選択候補マスク (H,W)
+        # AI矩形ドラッグ
+        self._ai_box_start: Optional[tuple[int, int]] = None
+        self._ai_box_end: Optional[tuple[int, int]] = None
+        self._ai_box_dragging: bool = False
+        self._ai_press_widget_pos: Optional[QPointF] = None
 
         self.setMinimumSize(400, 300)
 
@@ -370,6 +387,40 @@ class ImageCanvas(QWidget):
         self.update()
 
     # ------------------------------------------------------------------ #
+    # v0.6 AIプロンプト オーバーレイ API (MainWindow が状態を渡す)
+    # ------------------------------------------------------------------ #
+
+    def set_ai_overlay(
+        self,
+        points: list,
+        box,
+        preview_mask: Optional[np.ndarray],
+    ) -> None:
+        """
+        AIプロンプトと候補プレビューを表示する。
+        points: list[(x, y, label)] / box: (x1,y1,x2,y2) or None / preview_mask: (H,W) uint8 or None
+        座標はすべて元画像座標。
+        """
+        self._ai_points = list(points)
+        self._ai_box = tuple(box) if box is not None else None
+        self._ai_preview_mask = preview_mask
+        self.update()
+
+    def clear_ai_overlay(self) -> None:
+        self._ai_points = []
+        self._ai_box = None
+        self._ai_preview_mask = None
+        self._ai_box_start = None
+        self._ai_box_end = None
+        self._ai_box_dragging = False
+        self.update()
+
+    def set_ai_active(self, active: bool) -> None:
+        """AI_PROMPTモードのアクティブ状態 (カーソル表示用)。"""
+        self._ai_active = active
+        self.update()
+
+    # ------------------------------------------------------------------ #
     # 描画
     # ------------------------------------------------------------------ #
 
@@ -406,6 +457,49 @@ class ImageCanvas(QWidget):
                 self._gc_hint_radius, self._gc_hint_label,
                 is_current=True,
             )
+
+        # AIプロンプト: 矩形ドラッグ中プレビュー
+        if (self._edit_mode == EditMode.AI_PROMPT and self._ai_box_dragging
+                and self._ai_box_start and self._ai_box_end):
+            x0, y0 = self._ai_box_start
+            x1, y1 = self._ai_box_end
+            wx0, wy0 = self._mask_to_widget(min(x0, x1), min(y0, y1))
+            wx1, wy1 = self._mask_to_widget(max(x0, x1), max(y0, y1))
+            painter.save()
+            painter.setPen(QPen(QColor(255, 220, 0, 220), 1.5, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(wx0, wy0, wx1 - wx0, wy1 - wy0)
+            painter.restore()
+
+        # AIプロンプト: 確定済み矩形
+        if self._ai_box is not None:
+            x1, y1, x2, y2 = self._ai_box
+            wx0, wy0 = self._mask_to_widget(min(x1, x2), min(y1, y2))
+            wx1, wy1 = self._mask_to_widget(max(x1, x2), max(y1, y2))
+            painter.save()
+            painter.setPen(QPen(QColor(60, 140, 255, 230), 2.0, Qt.PenStyle.DashLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(wx0, wy0, wx1 - wx0, wy1 - wy0)
+            painter.restore()
+
+        # AIプロンプト: 点マーカー (正=緑+ / 負=赤-)
+        if self._ai_points:
+            painter.save()
+            for (px, py, label) in self._ai_points:
+                wx, wy = self._mask_to_widget(px, py)
+                if label == 1:
+                    col = QColor(0, 210, 0)
+                    sign = "+"
+                else:
+                    col = QColor(225, 30, 30)
+                    sign = "-"
+                painter.setPen(QPen(col, 2.0))
+                painter.setBrush(QColor(col.red(), col.green(), col.blue(), 90))
+                painter.drawEllipse(QPoint(wx, wy), 7, 7)
+                painter.setPen(QPen(QColor(255, 255, 255), 2.0))
+                painter.drawText(QRect(wx - 7, wy - 8, 14, 16),
+                                 Qt.AlignmentFlag.AlignCenter, sign)
+            painter.restore()
 
         # ブラシカーソル
         if self._edit_mode == EditMode.BRUSH and self._cursor_pos:
@@ -588,7 +682,25 @@ class ImageCanvas(QWidget):
                 gc_mask = cv2.resize(gc_mask, (dw, dh), interpolation=cv2.INTER_NEAREST)
             result = self._overlay_grabcut_preview(result, gc_mask)
 
+        # AI候補プレビュー (マスク表示ON/OFFに関わらず重ねる)
+        if self._ai_preview_mask is not None and self._ai_preview_mask.shape[:2] == (ih, iw):
+            ai_mask = self._ai_preview_mask
+            if needs_scale:
+                ai_mask = cv2.resize(ai_mask, (dw, dh), interpolation=cv2.INTER_NEAREST)
+            result = self._overlay_ai_preview(result, ai_mask)
+
         return result
+
+    def _overlay_ai_preview(self, base: np.ndarray, ai_mask: np.ndarray) -> np.ndarray:
+        """AI候補マスクをシアン系の半透明オーバーレイで表示。"""
+        region = ai_mask >= 128
+        if not np.any(region):
+            return base
+        color = np.array([230, 200, 0], dtype=np.float32)  # BGR: シアン寄り
+        result = base.copy().astype(np.float32)
+        alpha = 0.5
+        result[region] = result[region] * (1.0 - alpha) + color * alpha
+        return result.clip(0, 255).astype(np.uint8)
 
     def _build_diff_composite(self, img: np.ndarray, mask: np.ndarray,
                                base_mask: Optional[np.ndarray] = None) -> np.ndarray:
@@ -687,6 +799,20 @@ class ImageCanvas(QWidget):
                 self._poly_points.clear()
                 self.update()
 
+        elif mode == EditMode.AI_PROMPT:
+            mx, my = self._widget_to_mask(event.position())
+            if mx is None:
+                return
+            if event.button() == Qt.MouseButton.LeftButton:
+                # 左: クリック=正点 / ドラッグ=矩形
+                self._ai_box_start = (mx, my)
+                self._ai_box_end = (mx, my)
+                self._ai_box_dragging = False
+                self._ai_press_widget_pos = event.position()
+            elif event.button() == Qt.MouseButton.RightButton:
+                # 右: 負点
+                self.ai_point_clicked.emit({"x": mx, "y": my, "positive": False})
+
         elif mode in _GRABCUT_MODES:
             if event.button() == Qt.MouseButton.LeftButton:
                 mx, my = self._widget_to_mask(event.position())
@@ -736,6 +862,16 @@ class ImageCanvas(QWidget):
 
         if self._painting and self._edit_mode == EditMode.BRUSH:
             self._do_paint(pos)
+        elif self._edit_mode == EditMode.AI_PROMPT and self._ai_box_start is not None \
+                and event.buttons() & Qt.MouseButton.LeftButton:
+            # 一定距離動いたら矩形ドラッグとみなす
+            if self._ai_press_widget_pos is not None:
+                d = (pos - self._ai_press_widget_pos)
+                if abs(d.x()) + abs(d.y()) > 5:
+                    self._ai_box_dragging = True
+            if mx is not None:
+                self._ai_box_end = (mx, my)
+            self.update()
         elif self._gc_hint_drawing and mx is not None:
             # ヒントストローク描画中
             self._gc_current_stroke_pts.append((mx, my))
@@ -759,6 +895,26 @@ class ImageCanvas(QWidget):
         if self._edit_mode == EditMode.BRUSH:
             self._painting = False
             self._stroke_started = False
+
+        elif self._edit_mode == EditMode.AI_PROMPT:
+            if event.button() == Qt.MouseButton.LeftButton and self._ai_box_start is not None:
+                if self._ai_box_dragging and self._ai_box_end is not None:
+                    x0, y0 = self._ai_box_start
+                    x1, y1 = self._ai_box_end
+                    if abs(x1 - x0) >= 4 and abs(y1 - y0) >= 4:
+                        self.ai_box_drawn.emit({
+                            "x1": min(x0, x1), "y1": min(y0, y1),
+                            "x2": max(x0, x1), "y2": max(y0, y1),
+                        })
+                else:
+                    # クリック = 正点
+                    x0, y0 = self._ai_box_start
+                    self.ai_point_clicked.emit({"x": x0, "y": y0, "positive": True})
+                self._ai_box_start = None
+                self._ai_box_end = None
+                self._ai_box_dragging = False
+                self._ai_press_widget_pos = None
+                self.update()
 
         elif self._edit_mode in (EditMode.RECT_ADD, EditMode.RECT_DEL):
             if self._rect_dragging and self._rect_start and self._rect_end:
@@ -1129,6 +1285,13 @@ class ImageCanvas(QWidget):
         self._gc_hint_drawing = False
         self._gc_current_stroke_pts.clear()
         self._gc_hint_is_active = False
+        # AIプロンプト表示状態 (画像切替時にクリア。セッション側もreset)
+        self._ai_points = []
+        self._ai_box = None
+        self._ai_preview_mask = None
+        self._ai_box_start = None
+        self._ai_box_end = None
+        self._ai_box_dragging = False
         # _gc_ui_state はワーカーライフサイクルで管理するためここでは触らない
         # (Workerが実行中に画像が切り替わった場合はMainWindowがclear_grabcut_stateを呼ぶ)
 

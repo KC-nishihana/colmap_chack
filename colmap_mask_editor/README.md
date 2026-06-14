@@ -1,16 +1,89 @@
-# COLMAP Mask Editor v0.5.1
+# COLMAP Mask Editor v0.6
 
 COLMAP形式のプロジェクトに対応した、マスク画像の手動確認・修正GUIツールです。  
 v0.4A では **GrabCutによる半自動マスク生成機能** を追加しました。  
 v0.4A.1 では **大画像対応・GUIスレッド分離・例外処理強化・テスト追加** を行いました。  
 v0.4B・v0.5 では **GrabCut再推定・ヒント描画・補正UI** を追加しました。  
-v0.5.1 では **UI整理（3タブ化）・QSettings設定保存・未確定GrabCut保護・安定性向上** を行いました。
+v0.5.1 では **UI整理（3タブ化）・QSettings設定保存・未確定GrabCut保護・安定性向上** を行いました。  
+v0.6 では **Meta SAM 2.1 によるAIセグメンテーション（WindowsネイティブCUDA・CUDA拡張必須・QProcess常駐Worker）** を追加しました。
 
 ## 動作環境
 
-- OS: Windows 11
+- OS: Windows 11 (ネイティブ。WSL / Docker は使用しません)
 - Python: 3.12系
 - 依存ライブラリ: PySide6, OpenCV, NumPy, Pillow
+- AI機能 (任意): NVIDIA GPU (RTX 4090 検証) + CUDA Toolkit + PyTorch(CUDA版) + SAM 2 (CUDA拡張)
+
+---
+
+## v0.6 AIセグメンテーション (SAM 2.1)
+
+SAM 2.1 を使った点・矩形プロンプトによる半自動マスク生成です。**SAM 2 関連の重い処理
+(PyTorch / SAM 2 / CUDA拡張) はすべて別プロセス (QProcess 常駐 Worker) で実行され、
+GUI プロセスは `torch` / `sam2` / `sam2._C` を一切 import しません。** そのため Worker が
+クラッシュ・CUDAエラー・Out of Memory で落ちても、本体 (ブラシ・GrabCut・保存) は動作し続けます。
+
+### 構成
+
+| プロセス | 役割 | 依存 |
+|---------|------|------|
+| GUIプロセス | PySide6 / OpenCV / 既存編集機能 | torch非依存 |
+| AIサブプロセス (Worker) | PyTorch / SAM 2.1 / CUDA / SAM 2 CUDA拡張 | `sam_backend/worker_main.py` |
+
+- 通信: **JSON Lines** (stdout=JSON専用 / stderr=ログ)。マスク本体は **NPZ一時ファイル**で受け渡し。
+- Worker は推論ごとに起動せず、アプリ使用中は**常駐**します。
+- **CUDA拡張 (`sam2._C`) は必須**です。読み込めない場合 AI 機能は無効化され、CPUや拡張なし処理へ**フォールバックしません**。
+
+### セットアップ手順 (実機が必要)
+
+1. **環境診断** (環境を変更しません):
+   ```powershell
+   python colmap_mask_editor/scripts/check_sam2_cuda_environment.py
+   ```
+   `logs/sam2_environment_report.json` に結果が出ます。終了コード 0 = ビルド可能性が高い。
+
+2. **SAM 2 + CUDA拡張の導入** (PyTorch CUDA版が入っている前提・VS2022 x64 Native Tools 環境で実行):
+   ```powershell
+   $env:SAM2_BUILD_CUDA = "1"; $env:SAM2_BUILD_ALLOW_ERRORS = "0"
+   colmap_mask_editor\scripts\setup_sam2_cuda_windows.ps1
+   ```
+   SAM 2 は `external/sam2/` へ clone され、`sam_backend/sam2_manifest.json` の検証済みコミットへ
+   checkout されます (リポジトリにはコミットしません)。
+
+3. **モデル配置**: `models/sam2/sam2.1_hiera_small.pt` を配置 (リポジトリにはコミットしません)。
+
+4. **CUDA拡張検証**:
+   ```powershell
+   python colmap_mask_editor/scripts/verify_sam2_cuda_extension.py --checkpoint models/sam2/sam2.1_hiera_small.pt
+   ```
+   `sam2._C` の import だけでなく、モデルロード・Embedding・推論・CUDA拡張後処理まで確認します。
+
+### 使い方
+
+1. 「AIセグメント」タブで **Worker起動 → モデル読込**。
+2. **正クリック (左)** で対象点、**負クリック (右)** で背景点、**左ドラッグ**で矩形を指定。
+3. **推論実行** で最大3候補とスコアを表示。**候補1/2/3** で切替 (再推論なし)。
+4. **追加 / 除外 / 置換** で通常マスクへ適用 (Undo 可能)。**キャンセル**で破棄。
+5. 画像切替・終了時に未確定があれば **適用 / 破棄 / キャンセル** を確認します。
+
+### Workerクラッシュ時の復旧
+
+Worker がクラッシュしても本体は維持されます。「AIセグメント」タブの **Worker再起動** で再開できます。
+通常マスクは変更されず、ブラシ・GrabCut・保存はそのまま使えます。
+
+### テスト
+
+```powershell
+# 通常テスト (torch/GPU不要・Fake Worker使用)
+& "C:\ProgramData\Anaconda3\Scripts\conda.exe" run -p "C:\conda-envs\colmap_mask_editor" python -m pytest colmap_mask_editor/tests/ -q
+
+# 実機CUDAテスト (要 GPU/SAM2/チェックポイント)
+$env:RUN_SAM2_CUDA_TESTS = "1"
+python -m pytest -m sam2_cuda -v
+
+# ベンチマーク (FHD/4K/8K)
+python colmap_mask_editor/tools/benchmark_sam2.py --checkpoint models/sam2/sam2.1_hiera_small.pt
+```
 
 ## インストール
 
