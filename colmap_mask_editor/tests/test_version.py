@@ -11,9 +11,9 @@ import pytest
 from core.version import APP_DISPLAY_NAME, APP_NAME, APP_VERSION
 
 
-def test_app_version_is_0_6_1():
-    """APP_VERSION が 0.6.1 である"""
-    assert APP_VERSION == "0.6.1"
+def test_app_version_is_0_7():
+    """APP_VERSION が 0.7 である"""
+    assert APP_VERSION == "0.7"
 
 
 def test_app_display_name_contains_version():
@@ -36,4 +36,4 @@ def test_readme_starts_with_v06():
     if not readme.exists():
         pytest.skip("README.md が見つかりません")
     first_line = readme.read_text(encoding="utf-8").splitlines()[0]
-    assert "0.6" in first_line, f"README 先頭行: {first_line!r}"
+    assert APP_VERSION in first_line, f"README 先頭行: {first_line!r}"

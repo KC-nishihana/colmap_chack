@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -30,6 +31,15 @@ if str(_PKG_ROOT) not in sys.path:
 
 from ai import protocol  # noqa: E402
 from ai import model_registry  # noqa: E402
+from ai.propagation_protocol import (  # noqa: E402
+    PropagationCommand,
+    PropagationDirection,
+    PropagationErrorCode,
+    PropagationEvent,
+    make_job_error,
+    make_job_event,
+)
+from ai.runtime_paths import get_propagation_job_dir  # noqa: E402
 from sam_backend import result_writer  # noqa: E402
 from sam_backend.image_loader import ImageLoadError, load_image_rgb  # noqa: E402
 from sam_backend.worker_logging import setup_worker_logging  # noqa: E402
@@ -54,6 +64,10 @@ class Worker:
         self._predictor = None
         self._sam2_commit = _read_sam2_commit()
         self._running = True
+        # V0.7 伝播: stdout は複数スレッドから書かれるため Lock で保護する
+        self._stdout_lock = threading.Lock()
+        self._video_manager = None
+        self._prop_runner = None       # 実行中の PropagationRunner (1ジョブのみ)
 
     # ------------------------------------------------------------------ #
     # 送信
@@ -61,8 +75,24 @@ class Worker:
 
     def _send(self, msg: dict) -> None:
         line = protocol.encode_line(msg)
-        _REAL_STDOUT.write(line + "\n")
-        _REAL_STDOUT.flush()
+        with self._stdout_lock:
+            _REAL_STDOUT.write(line + "\n")
+            _REAL_STDOUT.flush()
+
+    def _gpu_busy(self) -> bool:
+        return self._prop_runner is not None and self._prop_runner.is_alive()
+
+    def _reject_if_busy(self, request_id) -> bool:
+        """伝播中は単一画像系のGPUコマンドを拒否する。拒否したら True。"""
+        if self._gpu_busy():
+            self._send(make_job_error(
+                PropagationErrorCode.BUSY,
+                "画像伝播を実行中のため、この操作は実行できません。",
+                job_id=self._prop_runner.job_id if self._prop_runner else None,
+                request_id=request_id,
+            ))
+            return True
+        return False
 
     def _send_error(self, error_code: str, message: str, request_id=None, **fields) -> None:
         self._send(protocol.make_error(error_code, message, request_id, **fields))
@@ -125,6 +155,18 @@ class Worker:
             self._cmd_clear_cuda_cache(request_id)
         elif command == protocol.Command.SHUTDOWN:
             self._cmd_shutdown(request_id)
+        elif command == PropagationCommand.START:
+            self._cmd_propagation_start(msg, request_id)
+        elif command == PropagationCommand.PAUSE:
+            self._cmd_propagation_control(msg, request_id, "pause")
+        elif command == PropagationCommand.RESUME:
+            self._cmd_propagation_control(msg, request_id, "resume")
+        elif command == PropagationCommand.CANCEL:
+            self._cmd_propagation_control(msg, request_id, "cancel")
+        elif command == PropagationCommand.STATUS:
+            self._cmd_propagation_status(msg, request_id)
+        elif command == PropagationCommand.RELEASE:
+            self._cmd_propagation_release(msg, request_id)
         else:
             self._send_error(
                 protocol.ErrorCode.BAD_REQUEST,
@@ -194,6 +236,8 @@ class Worker:
         return self._model_manager
 
     def _cmd_load_model(self, msg: dict, request_id) -> None:
+        if self._reject_if_busy(request_id):
+            return
         from sam_backend.sam2_model_manager import (
             CudaExtensionUnavailable,
             CudaUnavailable,
@@ -252,6 +296,8 @@ class Worker:
         ))
 
     def _cmd_unload_model(self, request_id) -> None:
+        if self._reject_if_busy(request_id):
+            return
         if self._model_manager is not None:
             self._model_manager.unload()
         self._predictor = None
@@ -262,6 +308,8 @@ class Worker:
     # ------------------------------------------------------------------ #
 
     def _cmd_set_image(self, msg: dict, request_id) -> None:
+        if self._reject_if_busy(request_id):
+            return
         if self._predictor is None:
             self._send_error(protocol.ErrorCode.MODEL_NOT_LOADED,
                              "モデルがロードされていません", request_id)
@@ -303,6 +351,8 @@ class Worker:
     # ------------------------------------------------------------------ #
 
     def _cmd_predict(self, msg: dict, request_id) -> None:
+        if self._reject_if_busy(request_id):
+            return
         if self._predictor is None:
             self._send_error(protocol.ErrorCode.MODEL_NOT_LOADED,
                              "モデルがロードされていません", request_id)
@@ -369,8 +419,150 @@ class Worker:
             self._model_manager.clear_cuda_cache()
         self._send(protocol.make_event(protocol.Event.CUDA_CACHE_CLEARED, request_id))
 
+    # ------------------------------------------------------------------ #
+    # 伝播 (V0.7) — GPUジョブはバックグラウンドスレッドで実行
+    # ------------------------------------------------------------------ #
+
+    def _cmd_propagation_start(self, msg: dict, request_id) -> None:
+        if self._gpu_busy():
+            self._send(make_job_error(PropagationErrorCode.BUSY,
+                                      "別の伝播ジョブが実行中です", request_id=request_id))
+            return
+
+        frames = msg.get("frames") or []
+        if len(frames) < 2:
+            self._send(make_job_error(PropagationErrorCode.INVALID_SEQUENCE,
+                                      "伝播対象が2枚未満です", request_id=request_id))
+            return
+        ref_idx = msg.get("reference_frame_index")
+        if not isinstance(ref_idx, int) or not (0 <= ref_idx < len(frames)):
+            self._send(make_job_error(PropagationErrorCode.INVALID_SEQUENCE,
+                                      "基準フレーム位置が不正です", request_id=request_id))
+            return
+        ref_mask_path = msg.get("reference_mask_path")
+        if not ref_mask_path or not Path(ref_mask_path).exists():
+            self._send(make_job_error(PropagationErrorCode.INVALID_REFERENCE_MASK,
+                                      f"基準マスクが見つかりません: {ref_mask_path}",
+                                      request_id=request_id))
+            return
+        model_id = msg.get("model_id", model_registry.DEFAULT_MODEL_ID)
+        if not model_registry.has_model(model_id):
+            self._send(protocol.make_error(protocol.ErrorCode.BAD_REQUEST,
+                                           f"未登録モデル: {model_id}", request_id))
+            return
+        checkpoint_path = msg.get("checkpoint_path")
+        if not checkpoint_path or not Path(checkpoint_path).exists():
+            self._send(protocol.make_error(protocol.ErrorCode.MODEL_FILE_NOT_FOUND,
+                                           f"チェックポイントが見つかりません: {checkpoint_path}",
+                                           request_id))
+            return
+        direction = msg.get("direction", PropagationDirection.BOTH)
+        if direction not in PropagationDirection.ALL:
+            self._send(make_job_error(PropagationErrorCode.INVALID_SEQUENCE,
+                                      f"不正な伝播方向: {direction}", request_id=request_id))
+            return
+
+        info = model_registry.get_model(model_id)
+        job_id = "prop-" + uuid.uuid4().hex[:10]
+        job_dir = get_propagation_job_dir(job_id)
+
+        # VRAM確保のため単一画像Embeddingを解放 (モデルは保持)
+        try:
+            if self._predictor is not None:
+                self._predictor.release()
+        except Exception:
+            pass
+
+        from sam_backend.propagation_runner import PropagationRunner
+        from sam_backend.sam2_video_manager import Sam2VideoManager
+
+        self._video_manager = Sam2VideoManager()
+        params = {
+            "config_name": info.config_name,
+            "checkpoint_path": str(checkpoint_path),
+            "model_id": model_id,
+            "precision": msg.get("precision", "bf16"),
+            "device": msg.get("device", "cuda:0"),
+            "frames": frames,
+            "reference_frame_index": ref_idx,
+            "reference_mask_path": str(ref_mask_path),
+            "direction": direction,
+            "offload_video_to_cpu": bool(msg.get("offload_video_to_cpu", True)),
+            "offload_state_to_cpu": bool(msg.get("offload_state_to_cpu", False)),
+            "async_loading_frames": bool(msg.get("async_loading_frames", False)),
+            "max_frames": int(msg.get("max_frames", 100)),
+            "jpeg_quality": int(msg.get("jpeg_quality", 95)),
+            "thresholds": msg.get("thresholds"),
+        }
+        runner = PropagationRunner(
+            job_id=job_id, params=params, video_manager=self._video_manager,
+            job_dir=job_dir, send_cb=self._send, on_finished=self._on_prop_finished,
+        )
+        self._prop_runner = runner
+        # 受付応答: ここで request_id を解決し、以後は job_id で進捗を追う
+        self._send(make_job_event(PropagationEvent.STARTED, job_id,
+                                  request_id=request_id, frame_count=len(frames)))
+        runner.start()
+
+    def _on_prop_finished(self, job_id: str) -> None:
+        r = self._prop_runner
+        if r is not None and r.job_id == job_id:
+            self._prop_runner = None
+
+    def _cmd_propagation_control(self, msg: dict, request_id, action: str) -> None:
+        r = self._prop_runner
+        job_id = msg.get("job_id")
+        if r is None or not r.is_alive() or (job_id and job_id != r.job_id):
+            self._send(make_job_error(PropagationErrorCode.NOT_FOUND,
+                                      "対象の伝播ジョブが見つかりません",
+                                      job_id=job_id, request_id=request_id))
+            return
+        if action == "pause":
+            r.pause()
+            self._send(make_job_event(PropagationEvent.PAUSED, r.job_id, request_id=request_id))
+        elif action == "resume":
+            r.resume()
+            self._send(make_job_event(PropagationEvent.RESUMED, r.job_id, request_id=request_id))
+        elif action == "cancel":
+            r.cancel()
+            self._send(make_job_event(PropagationEvent.CANCELLING, r.job_id, request_id=request_id))
+
+    def _cmd_propagation_status(self, msg: dict, request_id) -> None:
+        r = self._prop_runner
+        if r is None or not r.is_alive():
+            self._send(make_job_error(PropagationErrorCode.NOT_FOUND,
+                                      "実行中の伝播ジョブはありません", request_id=request_id))
+            return
+        self._send(make_job_event(PropagationEvent.PROGRESS, r.job_id, request_id=request_id,
+                                  processed=r.processed, total=r.total, paused=r.is_paused))
+
+    def _cmd_propagation_release(self, msg: dict, request_id) -> None:
+        job_id = msg.get("job_id")
+        r = self._prop_runner
+        if r is not None and r.is_alive():
+            r.cancel()
+            r.join(timeout=10.0)
+        if self._video_manager is not None:
+            try:
+                self._video_manager.release()
+            except Exception:
+                pass
+            self._video_manager = None
+        self._prop_runner = None
+        self._send(make_job_event(PropagationEvent.RELEASED,
+                                  job_id or (r.job_id if r else ""), request_id=request_id))
+
     def _cmd_shutdown(self, request_id) -> None:
         self._send(protocol.make_event(protocol.Event.SHUTTING_DOWN, request_id))
+        r = self._prop_runner
+        if r is not None and r.is_alive():
+            r.cancel()
+            r.join(timeout=10.0)
+        if self._video_manager is not None:
+            try:
+                self._video_manager.release()
+            except Exception:
+                pass
         if self._model_manager is not None:
             self._model_manager.unload()
         self._running = False

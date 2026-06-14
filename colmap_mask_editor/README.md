@@ -1,11 +1,39 @@
-# COLMAP Mask Editor v0.6.1
+# COLMAP Mask Editor v0.7
 
 COLMAP形式のプロジェクトに対応した、マスク画像の手動確認・修正GUIツールです。  
 v0.4A では **GrabCutによる半自動マスク生成機能** を追加しました。  
 v0.4A.1 では **大画像対応・GUIスレッド分離・例外処理強化・テスト追加** を行いました。  
 v0.4B・v0.5 では **GrabCut再推定・ヒント描画・補正UI** を追加しました。  
 v0.5.1 では **UI整理（3タブ化）・QSettings設定保存・未確定GrabCut保護・安定性向上** を行いました。  
-v0.6 では **Meta SAM 2.1 によるAIセグメンテーション（WindowsネイティブCUDA・CUDA拡張必須・QProcess常駐Worker）** を追加しました。
+v0.6 では **Meta SAM 2.1 によるAIセグメンテーション（WindowsネイティブCUDA・CUDA拡張必須・QProcess常駐Worker）** を追加しました。  
+v0.6.1 では **CUDA拡張カーネルの直接実行検証・実QProcess統合テスト・終了コード厳格化** を行いました。  
+v0.7 では **SAM 2.1 Video Predictor による複数画像へのマスク伝播・レビュー・一括適用** を追加しました。
+
+## v0.7 画像伝播 (SAM 2.1 Video Predictor)
+
+1枚の画像で確定した1対象のマスクを基準に、前後の連続画像へマスクを伝播します。
+連続撮影画像から人物・車両・三脚・空・植生などを複数画像でまとめて除外/有効化する用途を想定しています。
+伝播 (Video Predictor) も既存の **QProcess 常駐 Worker 側だけ** で実行し、GUI は torch/sam2 を import しません。
+
+- **画像順序を明示**: 現在の一覧順 / COLMAP images.txt 優先 / ファイル名(自然順) / 撮影日時。
+  COLMAP順を撮影時系列と決めつけず、開始前に順序を確認できます。
+- **基準マスク**: 現在のAI候補、または現在の通常マスク。
+- **伝播方向/範囲**: 前方向 / 後方向 / 前後、前後N枚または一覧で選択した範囲。
+- **同一画像サイズ制限**: V0.7 は同一サイズの画像のみ伝播します (自動リサイズしません)。
+- **ステージング**: SAM 2 Video Predictor 用に連番JPEG (`000000.jpg`...) へ変換 (元画像は変更しません。EXIF/色空間は単一画像推論と統一)。日本語・全角スペースを含むパスに対応します。
+- **非同期ジョブ**: 伝播は Worker 内の専用スレッドで実行し、一時停止 / 再開 / キャンセルを受け付けます (キャンセルは現フレーム完了後・完成済み結果は保持)。
+- **品質警告**: 前景率・連結成分数・前フレームとの面積比/IoU・境界接触などから警告を表示します (自動破棄はしません。カメラ移動が大きいと正しい対象でも値が変動するため)。
+- **結果レビュー**: フレームごとに採用/除外し、採用した画像だけへ **追加 / 除外 / 置換** で一括適用します。
+- **トランザクション適用**: 既存マスクをバックアップし、全マスクを一時生成→全成功後に `os.replace` で確定。途中失敗時はロールバックします。
+- **バッチ取り消し**: 最後の一括適用をまとめて取り消せます (既存はバックアップから復元、新規作成は削除)。
+- 一時ファイルは `%LOCALAPPDATA%/COLMAPMaskEditor/propagation_runtime/<job_id>/` (frames/results/backup)。
+
+実機 Video Predictor テスト:
+```powershell
+$env:RUN_SAM2_CUDA_TESTS = "1"
+$env:SAM2_CHECKPOINT = "C:\...\sam2.1_hiera_small.pt"
+python -m pytest -m sam2_cuda colmap_mask_editor/tests/test_sam2_video_qprocess_cuda_integration.py -v
+```
 
 ## 動作環境
 

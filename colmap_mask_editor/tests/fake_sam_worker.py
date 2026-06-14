@@ -15,6 +15,17 @@
   corrupt_npz        : 壊れたNPZを書いて参照する
   cuda_extension_false: hello で cuda_extension_loaded=False
   oom                : predict で CUDA_OOM エラー応答
+
+  伝播 (V0.7):
+  propagation_normal      : 全フレーム frame_ready + completed
+  propagation_slow        : 各フレーム前に sleep
+  propagation_warning     : 一部フレームに warning_codes を付与
+  propagation_frame_failure: 1フレーム後に PREDICT_FAILED で失敗 (Workerは維持)
+  propagation_cancel      : cancel を受けたら CANCELLED (完成済み保持)
+  propagation_crash       : 伝播中に異常終了 (exit 1)
+  propagation_invalid_event: stdout に非JSON行を混ぜる
+  propagation_missing_result: frame_ready が存在しない result を指す
+  propagation_corrupt_mask: 壊れたPNGを書いて参照する
 """
 
 from __future__ import annotations
@@ -22,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -33,16 +45,25 @@ if str(_PKG_ROOT) not in sys.path:
 import numpy as np  # noqa: E402
 
 from ai import protocol, runtime_paths  # noqa: E402
+from ai.propagation_protocol import (  # noqa: E402
+    PropagationCommand,
+    PropagationErrorCode,
+    PropagationEvent,
+    make_job_error,
+    make_job_event,
+)
 from sam_backend import result_writer  # noqa: E402
 
 MODE = os.environ.get("FAKE_SAM_MODE", "normal")
 
 _REAL_STDOUT = sys.stdout
+_STDOUT_LOCK = threading.Lock()
 
 
 def send(msg: dict) -> None:
-    _REAL_STDOUT.write(protocol.encode_line(msg) + "\n")
-    _REAL_STDOUT.flush()
+    with _STDOUT_LOCK:
+        _REAL_STDOUT.write(protocol.encode_line(msg) + "\n")
+        _REAL_STDOUT.flush()
 
 
 def err(code: str, message: str, request_id=None, **fields) -> None:
@@ -72,6 +93,136 @@ def write_corrupt_npz(request_id: int) -> str:
 
 _IMAGE_KEY = None
 _MODEL_LOADED = False
+
+
+class _FakeProp(threading.Thread):
+    """偽の伝播ジョブ。frame_ready を逐次送り、pause/cancel を尊重する。"""
+
+    def __init__(self, job_id, frames, job_dir):
+        super().__init__(daemon=True)
+        self.job_id = job_id
+        self._frames = frames
+        self._job_dir = Path(job_dir)
+        self._pause = threading.Event()
+        self._cancel = threading.Event()
+        self.processed = 0
+        self.total = len(frames)
+
+    def pause(self):
+        self._pause.set()
+
+    def resume(self):
+        self._pause.clear()
+
+    def cancel(self):
+        self._cancel.set()
+        self._pause.clear()
+
+    @property
+    def is_paused(self):
+        return self._pause.is_set()
+
+    def _write_result(self, frame_index: int) -> str:
+        results = self._job_dir / "results"
+        results.mkdir(parents=True, exist_ok=True)
+        dest = results / f"{frame_index:06d}.png"
+        if MODE == "propagation_missing_result":
+            return str(results / f"missing_{frame_index:06d}.png")
+        if MODE == "propagation_corrupt_mask":
+            dest.write_bytes(b"not a png")
+            return str(dest)
+        import cv2
+        m = np.zeros((48, 64), np.uint8)
+        m[5:30, 5 + frame_index:25 + frame_index] = 255
+        ok, buf = cv2.imencode(".png", m)
+        buf.tofile(str(dest))
+        return str(dest)
+
+    def run(self):
+        try:
+            for i, fr in enumerate(self._frames):
+                if self._cancel.is_set():
+                    send(make_job_event(PropagationEvent.CANCELLED, self.job_id,
+                                        completed_count=self.processed))
+                    return
+                if self._pause.is_set():
+                    send(make_job_event(PropagationEvent.PAUSED, self.job_id))
+                    while self._pause.is_set():
+                        if self._cancel.is_set():
+                            send(make_job_event(PropagationEvent.CANCELLED, self.job_id,
+                                                completed_count=self.processed))
+                            return
+                        time.sleep(0.02)
+                    send(make_job_event(PropagationEvent.RESUMED, self.job_id))
+
+                if MODE == "propagation_slow":
+                    time.sleep(0.1)
+                if MODE == "propagation_crash":
+                    os._exit(1)
+
+                fidx = int(fr["frame_index"])
+                rp = self._write_result(fidx)
+                warns = ["LOW_IOU"] if (MODE == "propagation_warning" and i == 1) else []
+                send(make_job_event(PropagationEvent.FRAME_READY, self.job_id,
+                                    frame_index=fidx, entry_key=fr.get("entry_key", str(fidx)),
+                                    result_mask_path=rp, foreground_ratio=0.1,
+                                    warning_codes=warns, is_reference=(i == 0)))
+                self.processed += 1
+                send(make_job_event(PropagationEvent.PROGRESS, self.job_id,
+                                    processed=self.processed, total=self.total))
+
+                if MODE == "propagation_frame_failure" and i == 0:
+                    send(make_job_error(PropagationErrorCode.PREDICT_FAILED,
+                                        "frame failure (fake)", job_id=self.job_id))
+                    return
+            send(make_job_event(PropagationEvent.COMPLETED, self.job_id,
+                                completed_count=self.processed,
+                                warning_count=(1 if MODE == "propagation_warning" else 0)))
+        except Exception as e:  # noqa: BLE001
+            send(make_job_error(PropagationErrorCode.PREDICT_FAILED, str(e), job_id=self.job_id))
+
+
+_PROP: _FakeProp | None = None
+
+
+def _handle_propagation(command, msg, rid) -> None:
+    global _PROP
+    if command == PropagationCommand.START:
+        if _PROP is not None and _PROP.is_alive():
+            send(make_job_error(PropagationErrorCode.BUSY, "実行中です", request_id=rid))
+            return
+        frames = msg.get("frames") or []
+        if len(frames) < 2:
+            send(make_job_error(PropagationErrorCode.INVALID_SEQUENCE, "2枚未満", request_id=rid))
+            return
+        if MODE == "propagation_invalid_event":
+            _REAL_STDOUT.write("NOT JSON PROP EVENT\n")
+            _REAL_STDOUT.flush()
+        job_id = "prop-" + uuid.uuid4().hex[:8]
+        job_dir = runtime_paths.get_propagation_job_dir(job_id)
+        _PROP = _FakeProp(job_id, frames, job_dir)
+        send(make_job_event(PropagationEvent.STARTED, job_id, request_id=rid,
+                            frame_count=len(frames)))
+        _PROP.start()
+        return
+
+    r = _PROP
+    job_id = msg.get("job_id")
+    if r is None or not r.is_alive() or (job_id and job_id != r.job_id):
+        send(make_job_error(PropagationErrorCode.NOT_FOUND, "ジョブなし",
+                            job_id=job_id, request_id=rid))
+        return
+    if command == PropagationCommand.PAUSE:
+        r.pause(); send(make_job_event(PropagationEvent.PAUSED, r.job_id, request_id=rid))
+    elif command == PropagationCommand.RESUME:
+        r.resume(); send(make_job_event(PropagationEvent.RESUMED, r.job_id, request_id=rid))
+    elif command == PropagationCommand.CANCEL:
+        r.cancel(); send(make_job_event(PropagationEvent.CANCELLING, r.job_id, request_id=rid))
+    elif command == PropagationCommand.STATUS:
+        send(make_job_event(PropagationEvent.PROGRESS, r.job_id, request_id=rid,
+                            processed=r.processed, total=r.total, paused=r.is_paused))
+    elif command == PropagationCommand.RELEASE:
+        r.cancel(); send(make_job_event(PropagationEvent.RELEASED, r.job_id, request_id=rid))
 
 
 def handle(msg: dict) -> bool:
@@ -158,8 +309,13 @@ def handle(msg: dict) -> bool:
         send(protocol.make_event(protocol.Event.CUDA_CACHE_CLEARED, rid))
 
     elif command == protocol.Command.SHUTDOWN:
+        if _PROP is not None and _PROP.is_alive():
+            _PROP.cancel()
         send(protocol.make_event(protocol.Event.SHUTTING_DOWN, rid))
         return False
+
+    elif command in PropagationCommand.ALL:
+        _handle_propagation(command, msg, rid)
 
     else:
         err(protocol.ErrorCode.BAD_REQUEST, f"不明なコマンド: {command}", rid)

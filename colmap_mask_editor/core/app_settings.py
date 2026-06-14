@@ -52,6 +52,22 @@ _DEFAULTS: dict[str, Any] = {
     "ai/image_encode_timeout": 120,   # 秒
     "ai/predict_timeout": 30,         # 秒
     "ai/last_prompt_type": 0,         # 0=正クリック, 1=負クリック, 2=矩形
+
+    # ----- v0.7 画像伝播 (SAM 2.1 Video Predictor) -----
+    "propagation/default_direction": "both",   # forward / backward / both
+    "propagation/default_count": 10,           # 前後N枚
+    "propagation/order_mode": 0,               # 0=現在の一覧順,1=COLMAP,2=ファイル名,3=撮影日時
+    "propagation/max_frames": 100,
+    "propagation/offload_video_to_cpu": True,
+    "propagation/offload_state_to_cpu": False,
+    "propagation/jpeg_quality": 95,
+    "propagation/warn_empty": True,
+    "propagation/warn_too_large_ratio": 80,    # %
+    "propagation/warn_area_drop_ratio": 25,    # %
+    "propagation/warn_area_growth_ratio": 400, # %
+    "propagation/warn_component_count": 10,
+    "propagation/warn_low_iou": 5,             # % (IoU*100)
+    "propagation/last_apply_mode": "add",      # add / exclude / replace
 }
 
 # 各設定の有効範囲 (下限, 上限) - 数値型のみ
@@ -71,6 +87,15 @@ _CLAMPS: dict[str, tuple[int, int]] = {
     "ai/image_encode_timeout":  (5, 600),
     "ai/predict_timeout":       (5, 600),
     "ai/last_prompt_type":      (0, 2),
+    "propagation/default_count":         (1, 500),
+    "propagation/order_mode":            (0, 3),
+    "propagation/max_frames":            (2, 1000),
+    "propagation/jpeg_quality":          (1, 100),
+    "propagation/warn_too_large_ratio":  (1, 100),
+    "propagation/warn_area_drop_ratio":  (0, 100),
+    "propagation/warn_area_growth_ratio": (100, 5000),
+    "propagation/warn_component_count":  (1, 1000),
+    "propagation/warn_low_iou":          (0, 100),
 }
 
 
@@ -165,9 +190,10 @@ class AppSettings:
         設定スキーマを現行バージョンへ移行する。
 
         v1 -> v2 (v0.6): AIセグメンテーション設定キーを追加。
-        既存キーはキー名変更がないためそのまま保持され、欠けている AI キーは
-        get() がデフォルトを返すので明示書き込みは不要。schema_version を更新する。
-        既存ユーザー設定 (v1) を失わないことが目的。
+        v2 -> v3 (v0.7): 画像伝播 (propagation/*) 設定キーを追加。
+        いずれも追加のみ (破壊的変更なし)。既存キーはキー名変更がないため保持され、
+        欠けているキーは get() がデフォルトを返すので明示書き込みは不要。
+        既存ユーザー設定を失わないことが目的。schema_version のみ更新する。
         """
         raw = self._settings.value(_SCHEMA_KEY)
         if raw is None:
@@ -187,7 +213,7 @@ class AppSettings:
             return
 
         _log.info("設定スキーマを移行: v%d -> v%d", stored, SETTINGS_SCHEMA_VERSION)
-        # v1 -> v2: 追加のみ (破壊的変更なし)。schema_version を更新。
+        # 追加のみ (破壊的変更なし)。schema_version を更新するだけで既存値は保持される。
         self._settings.setValue(_SCHEMA_KEY, SETTINGS_SCHEMA_VERSION)
         self._settings.sync()
 

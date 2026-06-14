@@ -14,6 +14,7 @@ models/sam2/*.ckpt
 # SAM Worker のランタイム一時ファイル / キャッシュ
 sam_runtime/
 sam_cache/
+propagation_runtime/
 *.npz
 
 # 環境診断・検証・ベンチマークの出力

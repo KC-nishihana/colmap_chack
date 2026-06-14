@@ -147,6 +147,11 @@ class AiSession(QObject):
     def is_worker_running(self) -> bool:
         return self._proc.is_running()
 
+    @property
+    def process_manager(self):
+        """共有 SamProcessManager (V0.7 伝播コントローラが同一Workerを使うため)。"""
+        return self._proc
+
     def has_preview(self) -> bool:
         return self._state == AiUiState.PREVIEW and self._result is not None
 

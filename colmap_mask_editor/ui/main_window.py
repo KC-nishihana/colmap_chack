@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -48,9 +49,16 @@ from core.project_loader import ImageEntry, ProjectInfo, load_project
 from core.version import APP_DISPLAY_NAME
 from ui.image_canvas import EditMode, GrabCutUiState, ImageCanvas
 from ui.image_list_panel import ImageListPanel
-from ai import model_registry
+from ai import model_registry, runtime_paths
 from ai.ai_session import AiSession, AiUiState
 from ai.ai_mask_ops import APPLY_ADD, APPLY_EXCLUDE, APPLY_REPLACE, apply_ai_mask
+from ai.propagation_order import SourceImage, order_images, select_range
+from ai.propagation_preflight import DimEntry, validate_reference_mask, validate_sequence
+from ai.propagation_session import PropagationFrame, PropagationUiState
+from core.propagation_apply_worker import ApplyTarget, PropagationApplyWorker, undo_batch
+from ui.propagation_controller import PropagationController
+from ui.propagation_panel import PropagationPanel
+from ui.propagation_review_dialog import PropagationReviewDialog
 
 _log = logging.getLogger(__name__)
 
@@ -179,6 +187,12 @@ class MainWindow(QMainWindow):
         reset_act.triggered.connect(self._reset_settings)
         settings_menu.addAction(reset_act)
 
+        # --- 伝播メニュー (V0.7) ---
+        prop_menu = menubar.addMenu("伝播(&P)")
+        undo_batch_act = QAction("伝播の一括適用を取り消す(&U)", self)
+        undo_batch_act.triggered.connect(self._prop_undo_batch)
+        prop_menu.addAction(undo_batch_act)
+
         # --- ヘルプメニュー ---
         help_menu = menubar.addMenu("ヘルプ(&H)")
 
@@ -221,8 +235,8 @@ class MainWindow(QMainWindow):
     def _build_right_container(self) -> QWidget:
         """右パネル: タブウィジェット + 常時表示ナビエリア。"""
         container = QWidget()
-        container.setMinimumWidth(220)
-        container.setMaximumWidth(340)
+        container.setMinimumWidth(240)
+        container.setMaximumWidth(480)
 
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -244,11 +258,45 @@ class MainWindow(QMainWindow):
         tab1_scroll.setWidget(self._build_grabcut_tab())
         self._right_tab_widget.addTab(tab1_scroll, "GrabCut")
 
-        tab_ai_scroll = QScrollArea()
-        tab_ai_scroll.setWidgetResizable(True)
-        tab_ai_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        tab_ai_scroll.setWidget(self._build_ai_tab())
-        self._right_tab_widget.addTab(tab_ai_scroll, "AIセグメント")
+        # AIセグメント = 「単一画像」「画像伝播」を切替表示 (V0.7)。
+        # ネストしたタブは縦領域を圧迫するため、上部トグル + QStackedWidget にする。
+        self._prop_panel = PropagationPanel()
+        self._prop_controller = PropagationController(self._ai_session.process_manager, self)
+        self._last_apply_record: Optional[dict] = None
+        self._prop_apply_worker = None
+        self._wire_propagation()
+
+        ai_tab = QWidget()
+        ai_v = QVBoxLayout(ai_tab)
+        ai_v.setContentsMargins(2, 2, 2, 2)
+        ai_v.setSpacing(3)
+
+        ai_toggle = QHBoxLayout()
+        ai_toggle.setSpacing(2)
+        self._ai_view_single = QPushButton("単一画像")
+        self._ai_view_prop = QPushButton("画像伝播")
+        view_group = QButtonGroup(self)
+        for i, b in enumerate((self._ai_view_single, self._ai_view_prop)):
+            b.setCheckable(True)
+            view_group.addButton(b, i)
+            ai_toggle.addWidget(b)
+        self._ai_view_single.setChecked(True)
+        ai_v.addLayout(ai_toggle)
+
+        self._ai_stack = QStackedWidget()
+        single_scroll = QScrollArea()
+        single_scroll.setWidgetResizable(True)
+        single_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        single_scroll.setWidget(self._build_ai_tab())
+        self._ai_stack.addWidget(single_scroll)
+        prop_scroll = QScrollArea()
+        prop_scroll.setWidgetResizable(True)
+        prop_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        prop_scroll.setWidget(self._prop_panel)
+        self._ai_stack.addWidget(prop_scroll)
+        ai_v.addWidget(self._ai_stack, 1)
+        view_group.idClicked.connect(self._ai_stack.setCurrentIndex)
+        self._right_tab_widget.addTab(ai_tab, "AIセグメント")
 
         tab2_scroll = QScrollArea()
         tab2_scroll.setWidgetResizable(True)
@@ -881,6 +929,8 @@ class MainWindow(QMainWindow):
             return
         if not self._resolve_running_worker("プロジェクトを開く"):
             return
+        if not self._resolve_propagation("プロジェクトを開く", block_review=True):
+            return
         if not self._resolve_pending_ai_session("プロジェクトを開く"):
             return
         if not self._resolve_pending_grabcut_session("プロジェクトを開く"):
@@ -921,6 +971,10 @@ class MainWindow(QMainWindow):
             return
         # 2. GrabCut処理中
         if not self._resolve_running_worker("画像切替"):
+            self._list_panel.select_row(self._current_index)
+            return
+        # 2.5 伝播実行中 (レビューは画像確認のため許可)
+        if not self._resolve_propagation("画像切替", block_review=False):
             self._list_panel.select_row(self._current_index)
             return
         # 3. AI未確定プレビュー/プロンプト
@@ -2034,6 +2088,252 @@ class MainWindow(QMainWindow):
         return "cancel"
 
     # ------------------------------------------------------------------ #
+    # 画像伝播 (V0.7)
+    # ------------------------------------------------------------------ #
+
+    def _wire_propagation(self) -> None:
+        p, c = self._prop_panel, self._prop_controller
+        p.preflight_requested.connect(self._prop_preflight)
+        p.start_requested.connect(self._prop_start)
+        p.pause_requested.connect(c.pause)
+        p.resume_requested.connect(c.resume)
+        p.cancel_requested.connect(c.cancel)
+        p.review_requested.connect(self._prop_open_review)
+        p.discard_requested.connect(self._prop_discard)
+        c.state_changed.connect(p.set_state)
+        c.progress.connect(p.set_progress)
+        c.frame_ready.connect(lambda _i: self._prop_update_counts())
+        c.completed.connect(self._prop_on_completed)
+        c.cancelled.connect(self._prop_update_counts)
+        c.failed.connect(self._prop_on_failed)
+
+    def _prop_checkpoint(self, model_id: str) -> Path:
+        ckpt_dir = self._app_settings.get_ai_checkpoint_dir()
+        return Path(ckpt_dir) / model_registry.get_model(model_id).checkpoint_name
+
+    def _prop_thresholds(self) -> dict:
+        s = self._app_settings
+        return {
+            "too_large_ratio": s.get("propagation/warn_too_large_ratio", 80) / 100.0,
+            "area_drop_ratio": s.get("propagation/warn_area_drop_ratio", 25) / 100.0,
+            "area_growth_ratio": s.get("propagation/warn_area_growth_ratio", 400) / 100.0,
+            "component_count": s.get("propagation/warn_component_count", 10),
+            "low_iou": s.get("propagation/warn_low_iou", 5) / 100.0,
+        }
+
+    def _prop_build_frames(self, opts: dict):
+        if self._project is None or self._current_index < 0:
+            return None
+        entries = self._project.entries
+        images = [
+            SourceImage(
+                entry_key=str(e.rel_path), source_path=str(e.image_path),
+                list_index=i, file_name=e.image_path.name,
+                colmap_index=(i if e.colmap_registered else None),
+            )
+            for i, e in enumerate(entries)
+        ]
+        ordered = order_images(images, opts["order_mode"])
+        ref_key = str(entries[self._current_index].rel_path)
+        try:
+            src, ref_idx = select_range(ordered, ref_key, opts["direction"], opts["count"])
+        except ValueError:
+            return None
+        frames = [PropagationFrame(frame_index=i, entry_key=s.entry_key, source_path=s.source_path)
+                  for i, s in enumerate(src)]
+        return frames, ref_idx
+
+    def _prop_reference_mask(self, opts: dict):
+        if opts["use_ai_candidate"]:
+            return self._ai_session.selected_mask()
+        return self._editor.mask if self._editor is not None else None
+
+    def _prop_preflight(self) -> bool:
+        opts = self._prop_panel.options()
+        built = self._prop_build_frames(opts)
+        if built is None:
+            QMessageBox.warning(self, "伝播", "対象画像を決定できません (プロジェクト/画像を選択してください)。")
+            return False
+        frames, ref_idx = built
+        self._prop_panel.set_order_preview([
+            f"{i}  {Path(f.source_path).name}" + ("  ← 基準画像" if i == ref_idx else "")
+            for i, f in enumerate(frames)
+        ])
+        errors: list[str] = []
+        ref_mask = self._prop_reference_mask(opts)
+        if ref_mask is None:
+            errors.append("基準マスクがありません (AI候補を生成するか通常マスクを用意してください)。")
+        dims: list[DimEntry] = []
+        for f in frames:
+            img = imread_jp(Path(f.source_path))
+            if img is None:
+                errors.append(f"画像を読み込めません: {f.entry_key}")
+                continue
+            h, w = img.shape[:2]
+            dims.append(DimEntry(f.entry_key, Path(f.source_path).name, w, h))
+        if ref_mask is not None and dims:
+            rd = dims[ref_idx] if ref_idx < len(dims) else dims[0]
+            errors += validate_reference_mask(ref_mask, rd.width, rd.height)
+        if dims:
+            errors += validate_sequence(dims, frames[ref_idx].entry_key, opts["max_frames"])
+        if errors:
+            QMessageBox.warning(self, "伝播 事前確認", "\n\n".join(errors))
+            return False
+        return True
+
+    def _prop_start(self) -> None:
+        if not self._ai_session.is_worker_running():
+            QMessageBox.information(self, "伝播", "先に「単一画像」タブで Worker を起動してください。")
+            return
+        if not self._ai_session.cuda_extension_loaded:
+            QMessageBox.warning(self, "伝播", "SAM 2 CUDA拡張が無効です。AI機能は使用できません。")
+            return
+        if self._prop_controller.is_active():
+            QMessageBox.information(self, "伝播", "すでに伝播を実行中です。")
+            return
+        opts = self._prop_panel.options()
+        if not self._prop_preflight():
+            return
+        frames, ref_idx = self._prop_build_frames(opts)
+        ref_mask = self._prop_reference_mask(opts)
+        ckpt = self._prop_checkpoint(opts["model_id"])
+        if not ckpt.exists():
+            QMessageBox.warning(self, "伝播", f"チェックポイントが見つかりません:\n{ckpt}")
+            return
+        self._prop_controller.start(
+            frames=frames, reference_frame_index=ref_idx, reference_mask=ref_mask,
+            order_mode=opts["order_mode"], direction=opts["direction"],
+            model_id=opts["model_id"], checkpoint_path=str(ckpt), precision=opts["precision"],
+            device=self._app_settings.get("ai/device", "cuda:0"),
+            offload_video_to_cpu=opts["offload_video_to_cpu"],
+            offload_state_to_cpu=opts["offload_state_to_cpu"],
+            max_frames=opts["max_frames"],
+            jpeg_quality=self._app_settings.get("propagation/jpeg_quality", 95),
+            thresholds=self._prop_thresholds(),
+        )
+
+    def _prop_update_counts(self) -> None:
+        s = self._prop_controller.session
+        if s is None:
+            return
+        s.recompute_counts()
+        self._prop_panel.set_counts(s.completed_count, s.warning_count, s.failed_count)
+
+    def _prop_on_completed(self) -> None:
+        self._prop_update_counts()
+        QMessageBox.information(self, "伝播完了",
+                               "伝播が完了しました。「結果レビュー」で採否を確認し適用してください。")
+
+    def _prop_on_failed(self, code: str, message: str) -> None:
+        QMessageBox.warning(self, "伝播エラー", f"{code}\n{message}")
+
+    def _prop_open_review(self) -> None:
+        s = self._prop_controller.session
+        if s is None or s.state != PropagationUiState.REVIEW:
+            QMessageBox.information(self, "伝播", "レビュー可能な結果がありません。")
+            return
+        dlg = PropagationReviewDialog(s, self)
+        dlg.exec()
+        if dlg.apply_requested():
+            self._prop_apply(dlg.apply_mode(), dlg.accepted_frames())
+
+    def _prop_apply(self, mode: str, frames: list) -> None:
+        if self._project is None:
+            return
+        by_key = {str(e.rel_path): e for e in self._project.entries}
+        targets: list[ApplyTarget] = []
+        for f in frames:
+            e = by_key.get(f.entry_key)
+            if e is None or not f.result_mask_path:
+                continue
+            save = get_source_mask_save_path(self._project.root, e)
+            targets.append(ApplyTarget(f.entry_key, str(save), f.result_mask_path))
+        if not targets:
+            QMessageBox.information(self, "伝播適用", "採用されたフレームがありません。")
+            return
+        job_id = self._prop_controller.session.job_id
+        backup = runtime_paths.get_propagation_job_dir(job_id, create=True) / "backup"
+        worker = PropagationApplyWorker(targets, mode, str(backup), job_id=job_id, parent=self)
+        worker.finished_ok.connect(self._prop_on_applied)
+        worker.failed.connect(lambda m: QMessageBox.warning(self, "伝播適用 失敗", m))
+        self._prop_apply_worker = worker
+        worker.start()
+
+    def _prop_on_applied(self, record: dict) -> None:
+        self._last_apply_record = record
+        n = len(record.get("targets", []))
+        self._prop_controller.discard_session()
+        self._prop_panel.set_state(PropagationUiState.IDLE)
+        if self._project is not None and self._current_index >= 0:
+            self._reload_project_preserve_index()
+        QMessageBox.information(self, "伝播適用",
+                               f"{n} 枚へ適用しました。「伝播の一括適用を取り消す」で取り消せます。")
+
+    def _prop_discard(self) -> None:
+        self._prop_controller.discard_session()
+        self._prop_panel.set_state(PropagationUiState.IDLE)
+
+    def _prop_undo_batch(self) -> None:
+        if not self._last_apply_record:
+            QMessageBox.information(self, "取り消し", "取り消せる伝播適用がありません。")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("伝播の一括適用を取り消す")
+        box.setText("最後の伝播一括適用を取り消します。よろしいですか？")
+        ok = box.addButton("取り消す", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("やめる", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not ok:
+            return
+        undone = undo_batch(self._last_apply_record)
+        self._last_apply_record = None
+        if self._project is not None and self._current_index >= 0:
+            self._reload_project_preserve_index()
+        QMessageBox.information(self, "取り消し", f"{len(undone)} 枚を元に戻しました。")
+
+    def _reload_project_preserve_index(self) -> None:
+        idx = self._current_index
+        self._project = load_project(self._project.root)
+        self._list_panel.set_entries(self._project.entries)
+        if 0 <= idx < len(self._project.entries):
+            self._select_image(idx)
+
+    def _resolve_propagation(self, reason: str, block_review: bool = True) -> bool:
+        """伝播実行中/未適用レビューの確認。続行可なら True。"""
+        c = self._prop_controller
+        if c.is_active():
+            box = QMessageBox(self)
+            box.setWindowTitle("画像伝播中")
+            box.setText(f"画像伝播を実行中です。\n処理をキャンセルして {reason} を続行しますか？")
+            cancel_btn = box.addButton("伝播をキャンセル", QMessageBox.ButtonRole.AcceptRole)
+            back_btn = box.addButton("戻る", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(back_btn)
+            box.exec()
+            if box.clickedButton() is cancel_btn:
+                c.cancel()
+                return True
+            return False
+        if block_review and c.has_unapplied_results():
+            box = QMessageBox(self)
+            box.setWindowTitle("未適用の伝播結果")
+            box.setText("未適用の伝播結果があります。")
+            review_btn = box.addButton("結果レビュー", QMessageBox.ButtonRole.ActionRole)
+            discard_btn = box.addButton("破棄", QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = box.addButton("キャンセル", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(cancel_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is review_btn:
+                self._prop_open_review()
+                return False
+            if clicked is discard_btn:
+                c.discard_session()
+                self._prop_panel.set_state(PropagationUiState.IDLE)
+                return True
+            return False
+        return True
+
+    # ------------------------------------------------------------------ #
     # ウィンドウクローズ
     # ------------------------------------------------------------------ #
 
@@ -2069,6 +2369,11 @@ class MainWindow(QMainWindow):
 
         # 2. AI推論実行中の確認
         if not self._resolve_ai_running("終了"):
+            event.ignore()
+            return
+
+        # 2.5 伝播実行中/未適用結果の確認
+        if not self._resolve_propagation("終了", block_review=True):
             event.ignore()
             return
 

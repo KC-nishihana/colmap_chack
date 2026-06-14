@@ -48,9 +48,9 @@ def test_tab_index_clamp_allows_4_tabs(tmp_path):
     assert s.get("window/right_tab_index") == 3  # 上限クランプ
 
 
-def test_schema_version_is_2_for_new(tmp_path):
+def test_schema_version_is_current_for_new(tmp_path):
     s = AppSettings(filepath=str(tmp_path / "s.ini"))
-    assert s.schema_version == SETTINGS_SCHEMA_VERSION == 2
+    assert s.schema_version == SETTINGS_SCHEMA_VERSION == 3
 
 
 def test_migration_preserves_v1_settings(tmp_path):
@@ -66,7 +66,7 @@ def test_migration_preserves_v1_settings(tmp_path):
 
     # AppSettings 生成で migrate が走る
     s = AppSettings(filepath=ini)
-    assert s.schema_version == 2
+    assert s.schema_version == SETTINGS_SCHEMA_VERSION
     # 既存値が保持されている
     assert s.get("edit/brush_size") == 123
     assert s.get("grabcut/iter_count") == 9

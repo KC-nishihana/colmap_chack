@@ -20,6 +20,18 @@ from pathlib import Path
 ENV_OVERRIDE = "COLMAP_MASK_EDITOR_RUNTIME_DIR"
 _APP_DIR = "COLMAPMaskEditor"
 _RUNTIME_SUBDIR = "sam_runtime"
+_PROPAGATION_SUBDIR = "propagation_runtime"
+
+
+def _app_base() -> Path:
+    """%LOCALAPPDATA%/COLMAPMaskEditor (override 優先, 無ければ temp)。"""
+    override = os.environ.get(ENV_OVERRIDE)
+    if override:
+        return Path(override)
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        return Path(local) / _APP_DIR
+    return Path(tempfile.gettempdir()) / _APP_DIR
 
 
 def get_runtime_dir(create: bool = True) -> Path:
@@ -27,14 +39,27 @@ def get_runtime_dir(create: bool = True) -> Path:
     if override:
         base = Path(override)
     else:
-        local = os.environ.get("LOCALAPPDATA")
-        if local:
-            base = Path(local) / _APP_DIR / _RUNTIME_SUBDIR
-        else:
-            base = Path(tempfile.gettempdir()) / _APP_DIR / _RUNTIME_SUBDIR
+        base = _app_base() / _RUNTIME_SUBDIR
     if create:
         base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+def get_propagation_root(create: bool = True) -> Path:
+    """伝播ジョブ用ルート (propagation_runtime/)。"""
+    base = _app_base() / _PROPAGATION_SUBDIR
+    if create:
+        base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def get_propagation_job_dir(job_id: str, create: bool = True) -> Path:
+    """propagation_runtime/<job_id>/。frames/results/backup を内包する。"""
+    d = get_propagation_root(create=create) / job_id
+    if create:
+        (d / "frames").mkdir(parents=True, exist_ok=True)
+        (d / "results").mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def cleanup_old_files(max_age_sec: float = 24 * 3600, runtime_dir: Path | None = None) -> int:
