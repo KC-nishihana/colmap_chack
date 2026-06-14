@@ -2,8 +2,21 @@
   "repository": "https://github.com/facebookresearch/sam2.git",
   "commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
   "verified": true,
+  "verified_at": "2026-06-14T13:10:00+09:00",
+  "verification": {
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "compute_capability": "8.9",
+    "torch_version": "2.6.0+cu124",
+    "torch_cuda_version": "12.4",
+    "nvcc_version": "12.4",
+    "cuda_extension_imported": true,
+    "cuda_extension_kernel_executed": true,
+    "connected_component_areas": [100, 300],
+    "fill_holes_test": true,
+    "model_inference": true
+  },
   "model_family": "sam2.1",
   "default_model": "sam2.1_hiera_small",
   "protocol_version": 1,
-  "_note": "commit は実機 (RTX 4090 + CUDA Toolkit + VS2022) で scripts/setup_sam2_cuda_windows.ps1 を実行し、CUDA拡張ビルド・ロード・推論スモークテストが成功したコミットSHAを記録すること。verified=true は検証完了後にセットアップスクリプトが書き込む。GUIプロセスはこのファイルを読まない (Workerプロセスのみ参照)。"
+  "_note": "verified=true は固定コミットで実機フル検証 (CUDA拡張ビルド・sam2._C import・get_connected_components 実行・fill_holes・Smallモデルロード・Embedding・正/負/矩形推論) がすべて成功した状態のみを意味する。verified/verification は scripts/setup_sam2_cuda_windows.ps1 が検証成功後に書き込み、失敗時は verified=false に戻す。GUIプロセスはこのファイルを読まない (Workerプロセスのみ参照)。"
 }

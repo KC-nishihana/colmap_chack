@@ -115,6 +115,13 @@ class SamProcessManager(QObject):
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.state() == QProcess.ProcessState.Running
 
+    def process_id(self) -> Optional[int]:
+        """起動中 Worker の OS プロセス ID。未起動なら None。"""
+        if self._proc is None:
+            return None
+        pid = int(self._proc.processId())
+        return pid if pid > 0 else None
+
     def start(self) -> bool:
         """Worker を起動する。既に起動済みなら False。"""
         if self.is_running():

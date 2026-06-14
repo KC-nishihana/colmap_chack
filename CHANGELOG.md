@@ -1,5 +1,40 @@
 # CHANGELOG
 
+## v0.6.1 (2026-06-14) — 検証強化・ドキュメント整合
+
+### CUDA検証強化
+- `sam2._C` の import 確認に加え、`get_connected_components` の CUDA カーネルを**直接実行**（連結成分の面積 100/300 を検証）
+- `fill_holes_in_mask_scores` 後処理を実機検証
+- 検証の成功判定を純粋関数 `ai/cuda_verification.py:evaluate_verification()` へ分離（import だけ・推論1件だけ等を成功にしない）
+- セットアップの完全成功・未検証を終了コードで区別（0/1/2/3/4）。`-BuildOnly` を追加
+- マニフェスト `verified` 管理を厳格化（実機フル検証成功後のみ true、失敗時は false へ戻す。`verification` 情報を記録）
+
+### 実機統合テスト
+- `test_sam2_qprocess_cuda_integration.py` を追加。**実 QProcess Worker 経由**でモデルロード・Embedding・正/負/矩形推論・NPZ を検証
+- 日本語・全角スペースを含むパスで実機推論を検証
+- Worker 終了後の QProcess NotRunning と **PID 別 GPU プロセス解放**（nvidia-smi compute-apps）を検証
+- Worker 再起動後の再推論を検証
+- `test_sam2_cuda_integration.py` にカーネル直接実行・fill_holes テストを追加し、候補数を厳格化
+- 通常 pytest 追加: `test_cuda_verification_logic` / `test_sam2_manifest` / `test_setup_result_codes`（torch 非依存）
+
+### ドキュメント
+- 右パネルを **4タブ表記**へ統一（編集 / GrabCut / AIセグメント / 保存・確認）
+- CUDA 検証手順（カーネル実行・fill_holes・推論）と終了コードを追記
+- `APP_VERSION = "0.6.1"`（`SETTINGS_SCHEMA_VERSION` は 2 のまま）
+
+## v0.6 (2026-06-14) — AIセグメンテーション (SAM 2.1)
+
+- Meta SAM 2.1 による AIセグメンテーション追加
+- WindowsネイティブCUDA対応・SAM 2 CUDA拡張必須化
+- QProcess 常駐 Worker（GUIは torch/sam2/sam2._C を import しない）
+- JSON Lines 通信・NPZ によるマスク受け渡し
+- 正クリック・負クリック・矩形プロンプト・最大3候補マスク
+- AIマスクの追加・除外・置換
+- Worker クラッシュ・CUDA OOM・タイムアウト処理（本体は維持）
+- CUDA 環境診断・セットアップ・検証スクリプト
+- 設定スキーマ v1→v2 移行（AI設定追加・既存設定を保持）
+- 右パネルを4タブ化（編集 / GrabCut / AIセグメント / 保存・確認）
+
 ## v0.5.1 (2026-06-14) — メンテナンスリリース
 
 ### UI整理

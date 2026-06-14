@@ -67,36 +67,78 @@ def test_cuda_extension_importable():
     import sam2._C  # noqa: F401
 
 
-def test_embedding_and_predictions(loaded):
+def test_cuda_extension_kernel_executes():
+    """get_connected_components() の CUDA カーネルを直接実行し面積を検証する。
+
+    sam2._C の import だけでなく、実際にカーネルが走り正しい連結成分面積を
+    返すことを確認する (NumPy の形状確認では代替しない)。
+    """
     import torch
+    from sam2.utils.misc import get_connected_components
+
+    mask = torch.zeros((1, 1, 64, 64), dtype=torch.bool, device="cuda:0")
+    mask[:, :, 5:15, 5:15] = True       # 10x10 = 100px
+    mask[:, :, 30:45, 35:55] = True      # 15x20 = 300px
+
+    labels, areas = get_connected_components(mask)
+    torch.cuda.synchronize()
+
+    assert labels.is_cuda
+    assert areas.is_cuda
+    assert labels.shape == mask.shape
+    assert areas.shape == mask.shape
+    assert labels.dtype in (torch.int32, torch.int64)
+    assert int(labels.max().item()) >= 2
+
+    component_areas = set(
+        int(v) for v in torch.unique(areas[mask]).detach().cpu().tolist()
+    )
+    assert 100 in component_areas
+    assert 300 in component_areas
+
+
+def test_fill_holes_postprocess():
+    """fill_holes_in_mask_scores() の CUDA 後処理を確認する (補助)。"""
+    import torch
+    from sam2.utils.misc import fill_holes_in_mask_scores
+
+    mask_scores = torch.ones((1, 1, 64, 64), dtype=torch.float32, device="cuda:0")
+    mask_scores[:, :, 28:32, 28:32] = -1.0   # 4x4=16px の穴
+
+    filled = fill_holes_in_mask_scores(mask_scores, max_area=32)
+    torch.cuda.synchronize()
+    assert filled.is_cuda
+    assert filled.shape == mask_scores.shape
+    assert bool(torch.all(filled[:, :, 28:32, 28:32] > 0).item())
+
+
+def test_embedding_and_predictions(loaded):
     mm, predictor = loaded
     rgb = (np.random.rand(1080, 1920, 3) * 255).astype(np.uint8)
     predictor.set_image(rgb, image_key="t")
 
-    # 正クリック
+    # 正クリック (multimask_output=True で 3 候補)
     masks, scores, _ = predictor.predict(
         points=[{"x": 960, "y": 540, "label": 1}], box=None, multimask_output=True
     )
-    assert masks.shape[0] >= 1
+    assert masks.shape[0] == 3
+    assert len(scores) == masks.shape[0]
     assert masks.shape[1:] == (1080, 1920)
     assert set(np.unique(masks)).issubset({0, 255})
 
     # 負クリック
-    predictor.predict(
+    m_neg, _s, _ = predictor.predict(
         points=[{"x": 960, "y": 540, "label": 1}, {"x": 10, "y": 10, "label": 0}],
         box=None, multimask_output=True,
     )
-    # 矩形
+    assert m_neg.shape[0] == 3
+
+    # 矩形: multimask_output=True は原則 3 候補を返す。
+    # (モデル/プロンプト仕様上保証されないケースに備え 1..3 を最低条件とし、
+    #  スコア数とマスク数の一致を必須にする)
     m_box, s_box, _ = predictor.predict(points=[], box=[200, 150, 1600, 900],
                                         multimask_output=True)
-    assert m_box.shape[0] >= 1
-    # 3候補・スコア取得
-    assert len(s_box) >= 1
+    assert m_box.shape[0] == 3
+    assert len(s_box) == m_box.shape[0]
+    assert 1 <= m_box.shape[0] <= 3
     assert mm.peak_vram_mb() > 0
-
-
-def test_worker_restart_frees_vram(loaded):
-    import torch
-    mm, _ = loaded
-    before = mm.vram_allocated_mb()
-    assert before > 0

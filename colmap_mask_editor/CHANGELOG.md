@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## v0.6.1
+
+### CUDA検証強化
+- sam2._Cのimport確認に加え、get_connected_components CUDAカーネルを直接実行
+- fill_holes後処理を実機検証
+- セットアップの完全成功・未検証を終了コードで区別 (0/1/2/3/4)・-BuildOnly追加
+- マニフェストのverified管理を厳格化 (実機フル検証後のみtrue)
+
+### 実機統合テスト
+- 実際のQProcess Worker経由でモデルロード・Embedding・推論を検証
+- 日本語・全角スペースパスを実機検証
+- Worker終了後のGPUプロセス解放 (PID別) を検証
+- Worker再起動後の再推論を検証
+
+### ドキュメント
+- 右パネルを4タブ表記へ統一
+- CUDA検証手順と終了コードを追記
+
 ## v0.6
 
 - SAM 2.1 AIセグメンテーション追加

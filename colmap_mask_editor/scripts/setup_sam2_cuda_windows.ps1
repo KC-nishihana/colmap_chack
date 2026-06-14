@@ -36,14 +36,17 @@
 [CmdletBinding()]
 param(
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")),
-    [string]$Sam2Commit = ""   # 省略時はマニフェストの commit を使用
+    [string]$Sam2Commit = "",  # 省略時はマニフェストの commit を使用
+    [switch]$BuildOnly         # 指定時はチェックポイント無しでもビルド+import成功で exit 0
 )
 
 $ErrorActionPreference = "Stop"
 
-function Fail($msg) {
+# 終了コード: 0=完全成功 / 1=環境・入力不足 / 2=CUDAバージョン不整合 /
+#             3=拡張ビルド・ロード・実行失敗 / 4=チェックポイント不足で未検証
+function Fail($msg, [int]$code = 1) {
     Write-Host "[FAIL] $msg" -ForegroundColor Red
-    exit 1
+    exit $code
 }
 function Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
 function Ok($msg)   { Write-Host "[ OK ] $msg" -ForegroundColor Green }
@@ -101,7 +104,7 @@ Ok "nvcc release $nvccVer"
 # バージョン整合チェック (torch.version.cuda と nvcc)
 $torchMajorMinor = ($torch.torch_cuda -split "\." | Select-Object -First 2) -join "."
 if ($torchMajorMinor -and $nvccVer -and ($torchMajorMinor -ne $nvccVer)) {
-    Fail "バージョン不整合: torch.version.cuda=$($torch.torch_cuda) と nvcc=$nvccVer のメジャー/マイナーが一致しません。両者を一致させてください (自動で別バージョンを入れません)。"
+    Fail "バージョン不整合: torch.version.cuda=$($torch.torch_cuda) と nvcc=$nvccVer のメジャー/マイナーが一致しません。両者を一致させてください (自動で別バージョンを入れません)。" 2
 }
 
 # 6. cl.exe
@@ -149,6 +152,21 @@ Info "SAM 2 を no-build-isolation でビルド/インストール"
 python -m pip install -v --no-build-isolation -e $sam2Dir
 if ($LASTEXITCODE -ne 0) { Fail "SAM 2 のビルド/インストールに失敗しました (ビルド失敗を無視せず停止)。" }
 
+# 検証開始前: verified を一旦 false に戻す (検証失敗時に過去の true を残さない)。
+function Write-Manifest($verified, $verification) {
+    $manifest.commit = $resolvedCommit
+    if ($manifest.PSObject.Properties.Name -contains 'verified') {
+        $manifest.verified = $verified
+    } else {
+        $manifest | Add-Member -NotePropertyName verified -NotePropertyValue $verified -Force
+    }
+    if ($null -ne $verification) {
+        $manifest | Add-Member -NotePropertyName verified_at -NotePropertyValue (Get-Date -Format "o") -Force
+        $manifest | Add-Member -NotePropertyName verification -NotePropertyValue $verification -Force
+    }
+    $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding utf8
+}
+
 # 11. 拡張 import テスト
 $extCheck = python -c @"
 import json
@@ -159,26 +177,57 @@ except Exception as e:
     print(json.dumps(dict(ok=False, error=repr(e))))
 "@
 $ext = $extCheck | ConvertFrom-Json
-if (-not $ext.ok) { Fail "sam2._C を import できません (CUDA拡張ロード失敗): $($ext.error)" }
+if (-not $ext.ok) {
+    Write-Manifest $false $null
+    Fail "sam2._C を import できません (CUDA拡張ロード失敗): $($ext.error)" 3
+}
 Ok "sam2._C import 成功"
 
-# 12. 推論スモークテスト (CUDA拡張後処理を含む) - checkpoint があれば実行
-$ckpt = Join-Path $RepoRoot "models\sam2\sam2.1_hiera_small.pt"
-if (Test-Path $ckpt) {
-    Info "推論スモークテスト (verify_sam2_cuda_extension.py)"
-    python (Join-Path $PSScriptRoot "verify_sam2_cuda_extension.py") --checkpoint $ckpt --model "sam2.1_hiera_small"
-    if ($LASTEXITCODE -ne 0) { Fail "CUDA拡張を含む推論スモークテストに失敗しました。" }
-    Ok "推論スモークテスト成功"
-
-    # 検証成功 → マニフェストへ commit を記録
-    $manifest.commit = $resolvedCommit
-    $manifest.verified = $true
-    $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding utf8
-    Ok "マニフェストへ検証済みコミットを記録: $resolvedCommit"
-} else {
-    Write-Host "[WARN] チェックポイントが見つかりません: $ckpt" -ForegroundColor Yellow
-    Write-Host "       models/sam2/ へ sam2.1_hiera_small.pt を配置し、verify スクリプトで最終確認してください。" -ForegroundColor Yellow
+# 11b. BuildOnly: ビルド+import のみ確認して終了 (実機検証は行わない)
+if ($BuildOnly) {
+    Write-Host "[BUILD-ONLY] CUDA拡張のビルドとimportのみ確認しました。" -ForegroundColor Yellow
+    Write-Host "             モデル推論とCUDAカーネル実行の実機検証は行っていません。" -ForegroundColor Yellow
+    Write-Host "             マニフェストの verified は true にしません。" -ForegroundColor Yellow
+    python (Join-Path $PSScriptRoot "check_sam2_cuda_environment.py") | Out-Null
+    exit 0
 }
+
+# 12. チェックポイント確認
+$ckpt = Join-Path $RepoRoot "models\sam2\sam2.1_hiera_small.pt"
+if (-not (Test-Path $ckpt)) {
+    Write-Manifest $false $null
+    Write-Host "[INCOMPLETE] CUDA拡張ビルドは成功しましたが、チェックポイントがないため実機検証は未完了です。" -ForegroundColor Yellow
+    Write-Host "             models/sam2/ へ sam2.1_hiera_small.pt を配置するか、ビルドのみ確認なら -BuildOnly を使用してください。" -ForegroundColor Yellow
+    exit 4
+}
+
+# 12b. 実機検証 (CUDAカーネル実行 + fill_holes + 実モデル推論)
+Info "実機検証 (verify_sam2_cuda_extension.py: get_connected_components / fill_holes / 推論)"
+python (Join-Path $PSScriptRoot "verify_sam2_cuda_extension.py") --checkpoint $ckpt --model "sam2.1_hiera_small"
+$verifyCode = $LASTEXITCODE
+if ($verifyCode -ne 0) {
+    Write-Manifest $false $null
+    Fail "実機検証に失敗しました (verify exit=$verifyCode)。CUDA拡張カーネル/推論を確認してください。" 3
+}
+Ok "実機検証 成功 (CUDAカーネル実行・推論を確認)"
+
+# 検証成功 → 検証結果を読み、マニフェストへ verified=true + verification を記録
+$verifyJson = Join-Path $logsDir "sam2_cuda_verification.json"
+$vr = Get-Content $verifyJson -Raw | ConvertFrom-Json
+$verification = [PSCustomObject]@{
+    gpu_name                       = $vr.gpu_name
+    compute_capability             = $vr.compute_capability
+    torch_version                  = $vr.torch_version
+    torch_cuda_version             = $vr.torch_cuda_version
+    nvcc_version                   = $nvccVer
+    cuda_extension_imported        = [bool]$vr.cuda_extension_imported
+    cuda_extension_kernel_executed = [bool]$vr.cuda_extension_kernel_executed
+    connected_component_areas      = $vr.connected_component_areas
+    fill_holes_test                = [bool]$vr.fill_holes_test
+    model_inference                = [bool]($vr.model_loaded -and $vr.embedding_ok -and $vr.box_prompt_ok)
+}
+Write-Manifest $true $verification
+Ok "マニフェストへ検証済みコミットを記録: $resolvedCommit (verified=true)"
 
 # 13. 環境情報を保存
 python (Join-Path $PSScriptRoot "check_sam2_cuda_environment.py") | Out-Null
