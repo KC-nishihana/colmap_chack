@@ -261,21 +261,22 @@ class AmgBatchRunner(threading.Thread):
         del arrays
         elapsed = time.time() - t0
 
-        # generator block には実際に使用した points_per_batch を記録
-        gen_for_manifest = dict(self._settings)
-        gen_for_manifest["points_per_batch"] = ppb_used
+        # generator block は要求値 (self._settings) のまま記録し、キャッシュ判定 /
+        # settings_hash と一致させる。高解像度で自動縮小された実効 points_per_batch は
+        # generator_effective に分離記録する (要求値で記録しないと次回必ず stale になる)。
+        effective: dict[str, Any] = {"points_per_batch": ppb_used}
         if oom_retries:
+            effective["oom_retries"] = oom_retries
             warnings.append(f"OOM 再試行 {oom_retries} 回 (points_per_batch={ppb_used})")
 
         manifest = amg_manifest.build_image_manifest(
             image_key=image_key, source_path=source_path, width=w, height=h,
-            model=self._model, generator=gen_for_manifest, preset=self._preset,
+            model=self._model, generator=self._settings, preset=self._preset,
             segment_count=segment_count, segment_ids=segment_ids,
             segments_npz_sha256=sha, processing_time_sec=elapsed,
             status=AmgImageStatus.READY, warnings=warnings,
+            generator_effective=effective,
         )
-        # settings_hash は元 settings(=要求値)で計算しキャッシュ判定と一致させる
-        manifest["settings_hash"] = amg_manifest.settings_hash(self._settings, self._model)
         amg_manifest.atomic_write_json(cache_dir / MANIFEST_NAME, manifest)
 
         amg_manifest.update_batch_image_entry(

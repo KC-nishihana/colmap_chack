@@ -25,6 +25,8 @@ logs/
 # 一時ファイルやロゴなどのアセット
 temp/
 assets/logos/
-*test
-test*
-colmap_mask_editor/test*
+
+# テスト出力のみ除外（テストコード自体はコミットする）
+.pytest_cache/
+test_output/
+tests/output/

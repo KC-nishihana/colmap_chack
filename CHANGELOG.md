@@ -1,5 +1,27 @@
 # CHANGELOG
 
+> このファイルがリリースノートの正本です。
+> アプリ同梱の `colmap_mask_editor/CHANGELOG.md` はこのファイルへのポインタです。
+
+## v0.8 (2026-06-15) — 全画像自動分割 (SAM 2.1 Automatic Mask Generator)
+
+- SAM 2.1 Automatic Mask Generator による全画像自動分割（各画像を独立解析）
+- 高速・標準・詳細プリセット
+- セグメント結果を SAM 2 公式互換の Fortran-order RLE へ変換
+- 画像 1 枚につき圧縮 NPZ 1 ファイル（`allow_pickle=False`・dense マスク禁止・原子保存・再読込検証）
+- 管理情報と判断状態を manifest.json で原子的に保存（NPZ は不変）
+- キャッシュ有効性・破損(corrupt)・古い(stale) 検出。元画像 fingerprint と設定 hash で判定
+- 高解像度で `points_per_batch` を自動縮小した場合も、要求値 (`generator`) と実効値 (`generator_effective`) を分離記録しキャッシュ再利用を維持
+- 途中停止・再開・失敗画像のみ再処理。画像 1 枚の失敗は他画像へ波及しない（GUI もバッチ全体を停止しない）
+- 必要・不要・未確認の手動レビュー（REUSABLE なキャッシュのみ対象）と重複候補切替
+- 最終マスクの生成・通常マスクへの一括適用（QThread・進捗・キャンセル・原子適用・ロールバック・バッチ取り消し）
+- 既存マスクとのサイズ不一致は黙って無視せず中止
+- RLE によるクリック位置判定（復号は最終マスク生成時のみ）
+- 日本語・全角スペースパス対応
+- QProcess 実機 Automatic Mask Generator テスト
+- 画像伝播を実験的機能として整理
+- 設定スキーマ v3→v4 移行
+
 ## v0.7 (2026-06-14) — 画像シーケンス伝播 (SAM 2.1 Video Predictor)
 
 - SAM 2.1 Video Predictor による複数画像へのマスク伝播 (1対象)

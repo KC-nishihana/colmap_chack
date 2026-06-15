@@ -225,8 +225,15 @@ def build_image_manifest(
     fingerprint: Optional[dict[str, int]] = None,
     status: str = AmgImageStatus.READY,
     warnings: Optional[list[str]] = None,
+    generator_effective: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """画像 1 枚分の manifest.json 構造を作る。decisions は全 unreviewed で初期化。"""
+    """画像 1 枚分の manifest.json 構造を作る。decisions は全 unreviewed で初期化。
+
+    `generator` はユーザー要求値 (キャッシュ判定 / settings_hash の基準)。
+    高解像度で points_per_batch を自動縮小した等の実行時の実効値は
+    `generator_effective` へ分離して記録する (キャッシュ判定には使わない)。
+    こうしないと縮小実行された画像が次回起動で必ず stale 判定になる。
+    """
     fp = fingerprint if fingerprint is not None else source_fingerprint(source_path)
     gen_block = {k: generator.get(k) for k in GENERATOR_KEYS}
     gen_block["preset"] = preset
@@ -244,6 +251,7 @@ def build_image_manifest(
             "checkpoint_fingerprint": model.get("checkpoint_fingerprint"),
         },
         "generator": gen_block,
+        "generator_effective": dict(generator_effective or {}),
         "settings_hash": settings_hash(generator, model),
         "segment_count": int(segment_count),
         "segments_npz": SEGMENTS_NPZ_NAME,

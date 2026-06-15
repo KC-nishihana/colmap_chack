@@ -156,4 +156,11 @@ class AmgController(QObject):
         # 開始前 (BUSY/MODEL_NOT_LOADED 等) は active_job_id 未設定でも通す
         if self._active_job_id and job_id and job_id != self._active_job_id:
             return
+        # image_key 付きエラーは「画像 1 枚の失敗」。Worker は次画像を続けるので
+        # バッチ全体を停止させてはならない。件数は後続の IMAGE_FAILED / BATCH_PROGRESS
+        # イベントで更新されるため、ここでは image_failed に流すだけにする。
+        if msg.get("image_key"):
+            self.image_failed.emit(msg)
+            return
+        # image_key の無いエラー (開始失敗 / BUSY / バッチ致命) のみバッチ停止扱い。
         self.failed.emit(code, msg.get("message", ""))

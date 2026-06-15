@@ -60,12 +60,17 @@ def compose_target_mask(target: AmgApplyTarget, mode: str) -> np.ndarray:
     if mode in (amg_mask_composer.MODE_EXCLUDE_REMOVE, amg_mask_composer.MODE_ADD_REMOVE):
         img = imread_jp(Path(target.save_path))
         if img is not None:
-            if img.ndim == 3:
+            if img.ndim >= 3:
                 img = img[:, :, 0]
-            elif img.ndim == 4:
-                img = img[:, :, 0]
-            if img.shape == (h, w):
-                existing = (img > 127).astype(np.uint8) * 255
+            # 既存マスクがあってサイズ不一致なら黙って無視せず中止する。
+            # 特に「不要領域を除外」では無視すると全面 255 から処理が始まり、
+            # 既存マスクの内容が静かに失われてしまう。
+            if img.shape != (h, w):
+                raise AmgApplyError(
+                    f"既存マスクと解析画像のサイズが一致しません: "
+                    f"{target.image_key}: mask={img.shape}, image={(h, w)}"
+                )
+            existing = (img > 127).astype(np.uint8) * 255
     return amg_mask_composer.compose_final_mask(data, decisions, mode, existing_mask=existing)
 
 

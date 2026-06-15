@@ -61,7 +61,7 @@ from ui.propagation_panel import PropagationPanel
 from ui.propagation_review_dialog import PropagationReviewDialog
 from ai import amg_cache, amg_manifest
 from core.version import SAM2_COMMIT_SHA
-from core.amg_apply_worker import AmgApplyError, AmgApplyTarget, apply_amg_batch
+from core.amg_apply_worker import AmgApplyTarget, AmgApplyWorker
 from ui.amg_batch_panel import AmgBatchPanel
 from ui.amg_controller import AmgController
 from ui.amg_review_widget import AmgReviewWidget
@@ -277,6 +277,10 @@ class MainWindow(QMainWindow):
         self._amg_controller = AmgController(self._ai_session.process_manager, self)
         self._amg_review_dialog = None
         self._amg_targets: list[dict] = []
+        self._amg_apply_worker = None           # 最終マスク一括適用 QThread
+        self._amg_apply_dialog = None           # その進捗ダイアログ
+        self._amg_apply_keys: list[str] = []     # 適用対象 image_key (完了後の再読込判定用)
+        self._amg_last_apply_record: dict = {}
         self._wire_amg()
 
         ai_tab = QWidget()
@@ -2318,7 +2322,11 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "全画像自動分割", f"{code}\n{message}")
 
     def _amg_review_items(self) -> list[dict]:
-        """ready なキャッシュを持つ画像を一覧化する。"""
+        """再利用可能 (REUSABLE) なキャッシュを持つ画像だけを一覧化する。
+
+        manifest の存在だけで開くと stale / corrupt なキャッシュも対象になり、
+        古い結果や壊れた NPZ を表示・適用してしまう。レビュー開始前にキャッシュ
+        検証し、REUSABLE の画像だけを開く。"""
         if self._project is None:
             return []
         batch = self._amg_batch_manifest().get("images", {})
@@ -2328,6 +2336,8 @@ class MainWindow(QMainWindow):
             entry = batch.get(key)
             cache_dir = amg_manifest.cache_dir_for(self._project.root, key)
             if not (cache_dir / amg_manifest.MANIFEST_NAME).exists():
+                continue
+            if self._amg_cache_state(key, c["source_path"]).state != amg_cache.REUSABLE:
                 continue
             items.append({
                 "image_key": key, "source_path": c["source_path"],
@@ -2361,6 +2371,9 @@ class MainWindow(QMainWindow):
     def _amg_apply_final_batch(self, image_keys: list, mode: str) -> None:
         if self._project is None or not image_keys:
             return
+        if self._amg_apply_worker is not None:
+            QMessageBox.information(self, "最終マスク生成", "すでに最終マスクを生成中です。")
+            return
         targets = []
         for key in image_keys:
             entry = self._amg_entry_for_key(key)
@@ -2372,19 +2385,63 @@ class MainWindow(QMainWindow):
         if not targets:
             return
         backup_dir = self._project.root / amg_manifest.CACHE_DIRNAME / "_apply_backup"
-        try:
-            outcome = apply_amg_batch(targets, mode, backup_dir, job_id="amg-final")
-        except AmgApplyError as e:
-            QMessageBox.warning(self, "最終マスク生成", f"生成に失敗しました:\n{e}")
-            return
-        self._amg_last_apply_record = outcome.record
+
+        # 複数 4K/8K の RLE 復号・和集合・PNG 生成は重いので必ず QThread で実行し、
+        # GUI を固めない。進捗ダイアログでキャンセルできる (失敗時は自動ロールバック)。
+        dlg = QProgressDialog("最終マスクを生成中...", "キャンセル", 0, len(targets), self)
+        dlg.setWindowTitle("最終マスク生成")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        self._amg_apply_dialog = dlg
+        self._amg_apply_keys = list(image_keys)
+
+        worker = AmgApplyWorker(targets, mode, str(backup_dir), job_id="amg-final", parent=self)
+        worker.progress.connect(self._amg_on_apply_progress)
+        worker.finished_ok.connect(self._amg_on_apply_finished)
+        worker.failed.connect(self._amg_on_apply_failed)
+        worker.cancelled.connect(self._amg_on_apply_cancelled)
+        dlg.canceled.connect(worker.cancel)
+        self._amg_apply_worker = worker
+        worker.start()
+
+    def _amg_on_apply_progress(self, done: int, total: int, key: str) -> None:
+        if self._amg_apply_dialog is not None:
+            self._amg_apply_dialog.setMaximum(total)
+            self._amg_apply_dialog.setValue(done)
+            self._amg_apply_dialog.setLabelText(f"最終マスクを生成中... ({done}/{total})\n{key}")
+
+    def _amg_on_apply_finished(self, record: dict) -> None:
+        self._amg_last_apply_record = record
+        n = len(record.get("targets", []))
+        keys = self._amg_apply_keys
+        self._amg_close_apply_ui()
         # 現在画像が対象なら再読込して反映
-        cur = self._amg_entry_for_key_current()
-        if cur in image_keys:
+        if self._amg_entry_for_key_current() in keys:
             self._reload_current_mask()
         QMessageBox.information(
+            self, "最終マスク生成", f"{n} 枚の最終マスクを生成しました。")
+
+    def _amg_on_apply_failed(self, message: str) -> None:
+        self._amg_close_apply_ui()
+        QMessageBox.warning(self, "最終マスク生成", f"生成に失敗しました:\n{message}")
+
+    def _amg_on_apply_cancelled(self) -> None:
+        self._amg_close_apply_ui()
+        QMessageBox.information(
             self, "最終マスク生成",
-            f"{len(outcome.applied)} 枚の最終マスクを生成しました。")
+            "生成をキャンセルしました（適用前の状態に戻しました）。")
+
+    def _amg_close_apply_ui(self) -> None:
+        """進捗ダイアログを閉じ、Worker を待機・解放する (参照リーク防止)。"""
+        if self._amg_apply_dialog is not None:
+            self._amg_apply_dialog.close()
+            self._amg_apply_dialog = None
+        w = self._amg_apply_worker
+        if w is not None:
+            w.wait()
+            w.deleteLater()
+            self._amg_apply_worker = None
 
     def _amg_entry_for_key_current(self):
         if self._project is None or self._current_index < 0:
