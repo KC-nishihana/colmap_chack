@@ -11,9 +11,9 @@ import pytest
 from core.version import APP_DISPLAY_NAME, APP_NAME, APP_VERSION
 
 
-def test_app_version_is_0_7():
-    """APP_VERSION が 0.7 である"""
-    assert APP_VERSION == "0.7"
+def test_app_version_is_0_8():
+    """APP_VERSION が 0.8 である"""
+    assert APP_VERSION == "0.8"
 
 
 def test_app_display_name_contains_version():

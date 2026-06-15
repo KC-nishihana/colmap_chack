@@ -45,6 +45,14 @@ if str(_PKG_ROOT) not in sys.path:
 import numpy as np  # noqa: E402
 
 from ai import protocol, runtime_paths  # noqa: E402
+from ai import amg_rle  # noqa: E402
+from ai.amg_protocol import (  # noqa: E402
+    AmgCommand,
+    AmgErrorCode,
+    AmgEvent,
+    make_job_error as amg_make_job_error,
+    make_job_event as amg_make_job_event,
+)
 from ai.propagation_protocol import (  # noqa: E402
     PropagationCommand,
     PropagationErrorCode,
@@ -53,6 +61,7 @@ from ai.propagation_protocol import (  # noqa: E402
     make_job_event,
 )
 from sam_backend import result_writer  # noqa: E402
+from sam_backend.amg_batch_runner import AmgBatchRunner  # noqa: E402
 
 MODE = os.environ.get("FAKE_SAM_MODE", "normal")
 
@@ -225,6 +234,111 @@ def _handle_propagation(command, msg, rid) -> None:
         r.cancel(); send(make_job_event(PropagationEvent.RELEASED, r.job_id, request_id=rid))
 
 
+# --------------------------------------------------------------------------- #
+# AMG (V0.8) — 実 AmgBatchRunner を Fake generator で駆動する
+# --------------------------------------------------------------------------- #
+
+_AMG: AmgBatchRunner | None = None
+
+
+class _AmgFakeResult:
+    def __init__(self, annotations, ppb=64, retries=0, peak=222, warnings=None):
+        self.annotations = annotations
+        self.points_per_batch_used = ppb
+        self.oom_retries = retries
+        self.peak_vram_mb = peak
+        self.warnings = warnings or []
+
+
+def _amg_fake_annotations(h=32, w=40):
+    a = np.zeros((h, w), np.uint8); a[2:20, 2:24] = 1
+    b = np.zeros((h, w), np.uint8); b[22:30, 26:38] = 1
+    anns = []
+    for m in (a, b):
+        ys, xs = np.where(m > 0)
+        anns.append({
+            "segmentation": {"size": [h, w], "counts": amg_rle.encode_mask(m)},
+            "area": int((m > 0).sum()),
+            "bbox": [int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)],
+            "predicted_iou": 0.9, "stability_score": 0.95,
+            "point_coords": [[float(xs.mean()), float(ys.mean())]], "crop_box": [0, 0, w, h],
+        })
+    return anns
+
+
+_amg_calls = {"n": 0}
+
+
+def _amg_load_image(_path):
+    return np.zeros((32, 40, 3), np.uint8), 40, 32
+
+
+def _amg_generate(_rgb, _settings):
+    _amg_calls["n"] += 1
+    if MODE == "amg_slow":
+        time.sleep(0.15)
+    if MODE == "amg_worker_crash" and _amg_calls["n"] == 2:
+        os._exit(1)
+    if MODE == "amg_all_failure":
+        raise RuntimeError("fake generate failure")
+    if MODE == "amg_one_image_failure" and _amg_calls["n"] == 2:
+        raise RuntimeError("fake generate failure on image 2")
+    if MODE == "amg_oom_failure":
+        from sam_backend.sam2_amg_manager import AmgOom
+        raise AmgOom("fake persistent OOM")
+    if MODE == "amg_oom_retry_success":
+        return _AmgFakeResult(_amg_fake_annotations(), ppb=16, retries=2,
+                              warnings=["CUDA OOM: points_per_batch 64 -> 16"])
+    return _AmgFakeResult(_amg_fake_annotations())
+
+
+def _handle_amg(command, msg, rid) -> None:
+    global _AMG
+    if command in (AmgCommand.BATCH_START, AmgCommand.RETRY_IMAGE):
+        if _AMG is not None and _AMG.is_alive():
+            send(amg_make_job_error(AmgErrorCode.BUSY, "実行中です", request_id=rid))
+            return
+        _amg_calls["n"] = 0
+        images = msg.get("images") or []
+        settings = msg.get("settings") or {}
+        from ai import amg_manifest
+        settings = settings or amg_manifest.preset_settings("fast")
+        runner = AmgBatchRunner(
+            job_id="amg-" + uuid.uuid4().hex[:8],
+            project_root=msg["project_root"], images=images,
+            settings=settings, preset=msg.get("preset", "fast"),
+            model=msg.get("model") or {"model_id": "fake", "sam2_commit": "fake", "checkpoint_fingerprint": "fp"},
+            generate_fn=_amg_generate, load_image_fn=_amg_load_image,
+            send_cb=send, force=(command == AmgCommand.RETRY_IMAGE) or bool(msg.get("force")),
+        )
+        _AMG = runner
+        send(amg_make_job_event(AmgEvent.BATCH_STARTED, runner.job_id,
+                                request_id=rid, total_images=len(images)))
+        runner.start()
+        return
+
+    r = _AMG
+    job_id = msg.get("job_id")
+    if r is None or (job_id and job_id != r.job_id):
+        send(amg_make_job_error(AmgErrorCode.JOB_NOT_FOUND, "ジョブなし",
+                                job_id=job_id, request_id=rid))
+        return
+    if command == AmgCommand.BATCH_PAUSE:
+        r.pause()
+    elif command == AmgCommand.BATCH_RESUME:
+        r.resume()
+    elif command == AmgCommand.BATCH_CANCEL:
+        r.cancel()
+        send(amg_make_job_event(AmgEvent.BATCH_CANCELLING, r.job_id, request_id=rid))
+    elif command == AmgCommand.BATCH_STATUS:
+        send(amg_make_job_event(AmgEvent.BATCH_PROGRESS, r.job_id, request_id=rid,
+                                **r.status_snapshot()))
+    elif command == AmgCommand.RELEASE:
+        if r.is_alive():
+            r.cancel()
+        send(amg_make_job_event(AmgEvent.RELEASED, r.job_id, request_id=rid))
+
+
 def handle(msg: dict) -> bool:
     """1コマンド処理。継続なら True, shutdown なら False。"""
     global _IMAGE_KEY, _MODEL_LOADED
@@ -311,11 +425,16 @@ def handle(msg: dict) -> bool:
     elif command == protocol.Command.SHUTDOWN:
         if _PROP is not None and _PROP.is_alive():
             _PROP.cancel()
+        if _AMG is not None and _AMG.is_alive():
+            _AMG.cancel()
         send(protocol.make_event(protocol.Event.SHUTTING_DOWN, rid))
         return False
 
     elif command in PropagationCommand.ALL:
         _handle_propagation(command, msg, rid)
+
+    elif command in AmgCommand.ALL:
+        _handle_amg(command, msg, rid)
 
     else:
         err(protocol.ErrorCode.BAD_REQUEST, f"不明なコマンド: {command}", rid)

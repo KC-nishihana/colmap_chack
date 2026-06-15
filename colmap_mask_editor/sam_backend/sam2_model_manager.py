@@ -96,6 +96,11 @@ class Sam2ModelManager:
         return self._predictor
 
     @property
+    def model(self):
+        """ロード済み SAM 2 モデル本体 (AMG が再利用する。二重ロード禁止)。"""
+        return self._model
+
+    @property
     def model_id(self) -> Optional[str]:
         return self._model_id
 

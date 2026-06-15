@@ -39,6 +39,13 @@ from ai.propagation_protocol import (  # noqa: E402
     make_job_error,
     make_job_event,
 )
+from ai.amg_protocol import (  # noqa: E402
+    AmgCommand,
+    AmgErrorCode,
+    AmgEvent,
+    make_job_error as amg_make_job_error,
+    make_job_event as amg_make_job_event,
+)
 from ai.runtime_paths import get_propagation_job_dir  # noqa: E402
 from sam_backend import result_writer  # noqa: E402
 from sam_backend.image_loader import ImageLoadError, load_image_rgb  # noqa: E402
@@ -68,6 +75,8 @@ class Worker:
         self._stdout_lock = threading.Lock()
         self._video_manager = None
         self._prop_runner = None       # 実行中の PropagationRunner (1ジョブのみ)
+        self._amg_manager = None       # 遅延生成 Sam2AmgManager
+        self._amg_runner = None        # 実行中の AmgBatchRunner (1ジョブのみ)
 
     # ------------------------------------------------------------------ #
     # 送信
@@ -79,16 +88,30 @@ class Worker:
             _REAL_STDOUT.write(line + "\n")
             _REAL_STDOUT.flush()
 
-    def _gpu_busy(self) -> bool:
+    def _prop_busy(self) -> bool:
         return self._prop_runner is not None and self._prop_runner.is_alive()
 
+    def _amg_busy(self) -> bool:
+        return self._amg_runner is not None and self._amg_runner.is_alive()
+
+    def _gpu_busy(self) -> bool:
+        return self._prop_busy() or self._amg_busy()
+
     def _reject_if_busy(self, request_id) -> bool:
-        """伝播中は単一画像系のGPUコマンドを拒否する。拒否したら True。"""
-        if self._gpu_busy():
+        """伝播/AMG 実行中は単一画像系のGPUコマンドを拒否する。拒否したら True。"""
+        if self._prop_busy():
             self._send(make_job_error(
                 PropagationErrorCode.BUSY,
                 "画像伝播を実行中のため、この操作は実行できません。",
                 job_id=self._prop_runner.job_id if self._prop_runner else None,
+                request_id=request_id,
+            ))
+            return True
+        if self._amg_busy():
+            self._send(amg_make_job_error(
+                AmgErrorCode.BUSY,
+                "全画像自動分割を実行中のため、この操作は実行できません。",
+                job_id=self._amg_runner.job_id if self._amg_runner else None,
                 request_id=request_id,
             ))
             return True
@@ -167,6 +190,20 @@ class Worker:
             self._cmd_propagation_status(msg, request_id)
         elif command == PropagationCommand.RELEASE:
             self._cmd_propagation_release(msg, request_id)
+        elif command == AmgCommand.BATCH_START:
+            self._cmd_amg_batch_start(msg, request_id)
+        elif command == AmgCommand.RETRY_IMAGE:
+            self._cmd_amg_batch_start(msg, request_id, force=True)
+        elif command == AmgCommand.BATCH_PAUSE:
+            self._cmd_amg_control(msg, request_id, "pause")
+        elif command == AmgCommand.BATCH_RESUME:
+            self._cmd_amg_control(msg, request_id, "resume")
+        elif command == AmgCommand.BATCH_CANCEL:
+            self._cmd_amg_control(msg, request_id, "cancel")
+        elif command == AmgCommand.BATCH_STATUS:
+            self._cmd_amg_status(msg, request_id)
+        elif command == AmgCommand.RELEASE:
+            self._cmd_amg_release(msg, request_id)
         else:
             self._send_error(
                 protocol.ErrorCode.BAD_REQUEST,
@@ -552,8 +589,140 @@ class Worker:
         self._send(make_job_event(PropagationEvent.RELEASED,
                                   job_id or (r.job_id if r else ""), request_id=request_id))
 
+    # ------------------------------------------------------------------ #
+    # AMG 全画像自動分割 (V0.8) — GPUジョブはバックグラウンドスレッドで実行
+    # ------------------------------------------------------------------ #
+
+    def _cmd_amg_batch_start(self, msg: dict, request_id, force: bool = False) -> None:
+        if self._gpu_busy():
+            job = (self._amg_runner.job_id if self._amg_busy()
+                   else (self._prop_runner.job_id if self._prop_runner else None))
+            self._send(amg_make_job_error(AmgErrorCode.BUSY,
+                                          "別のGPUジョブが実行中です", job_id=job,
+                                          request_id=request_id))
+            return
+
+        # モデルは load_model 済みである必要がある (AMG用に二重ロードしない)
+        if self._model_manager is None or not self._model_manager.is_loaded \
+                or self._model_manager.model is None:
+            self._send(amg_make_job_error(AmgErrorCode.MODEL_NOT_LOADED,
+                                          "モデルがロードされていません", request_id=request_id))
+            return
+
+        project_root = msg.get("project_root")
+        images = msg.get("images") or []
+        settings = msg.get("settings") or {}
+        preset = msg.get("preset", "custom")
+        if not project_root or not images or not settings:
+            self._send(amg_make_job_error(AmgErrorCode.INVALID_SETTINGS,
+                                          "project_root / images / settings が不足しています",
+                                          request_id=request_id))
+            return
+
+        model = msg.get("model") or {}
+        model = {
+            "model_id": model.get("model_id") or self._model_manager.model_id,
+            "sam2_commit": model.get("sam2_commit") or self._sam2_commit,
+            "checkpoint_fingerprint": model.get("checkpoint_fingerprint", ""),
+        }
+        oom_retry = bool(msg.get("oom_retry", True))
+
+        # VRAM確保のため単一画像Embeddingを解放 (モデルは保持)
+        try:
+            if self._predictor is not None:
+                self._predictor.release()
+        except Exception:
+            pass
+
+        from sam_backend.amg_batch_runner import AmgBatchRunner
+        from sam_backend.sam2_amg_manager import Sam2AmgManager
+        from sam_backend.image_loader import load_image_rgb
+
+        self._amg_manager = Sam2AmgManager(self._model_manager)
+        mgr = self._amg_manager
+
+        def _generate(rgb, gen_settings):
+            return mgr.generate(rgb, gen_settings, oom_retry=oom_retry)
+
+        job_id = "amg-" + uuid.uuid4().hex[:8]
+        runner = AmgBatchRunner(
+            job_id=job_id, project_root=project_root, images=images,
+            settings=settings, preset=preset, model=model,
+            generate_fn=_generate, load_image_fn=load_image_rgb,
+            send_cb=self._send, force=force or bool(msg.get("force", False)),
+            oom_retry=oom_retry, on_finished=self._on_amg_finished,
+            reclaim_fn=mgr.reclaim,
+        )
+        self._amg_runner = runner
+        # 受付応答: ここで request_id を解決し、以後は job_id で進捗を追う
+        self._send(amg_make_job_event(AmgEvent.BATCH_STARTED, job_id,
+                                      request_id=request_id, total_images=len(images)))
+        runner.start()
+
+    def _on_amg_finished(self, job_id: str) -> None:
+        r = self._amg_runner
+        if r is not None and r.job_id == job_id:
+            self._amg_runner = None
+        # ジョブ終了時に generator を破棄して GPU を返す (次の単一画像/伝播のため)
+        if self._amg_manager is not None:
+            try:
+                self._amg_manager.release()
+            except Exception:
+                pass
+
+    def _cmd_amg_control(self, msg: dict, request_id, action: str) -> None:
+        r = self._amg_runner
+        job_id = msg.get("job_id")
+        if r is None or not r.is_alive() or (job_id and job_id != r.job_id):
+            self._send(amg_make_job_error(AmgErrorCode.JOB_NOT_FOUND,
+                                          "対象のジョブが見つかりません",
+                                          job_id=job_id, request_id=request_id))
+            return
+        if action == "pause":
+            r.pause()
+        elif action == "resume":
+            r.resume()
+        elif action == "cancel":
+            r.cancel()
+            self._send(amg_make_job_event(AmgEvent.BATCH_CANCELLING, r.job_id,
+                                          request_id=request_id))
+
+    def _cmd_amg_status(self, msg: dict, request_id) -> None:
+        r = self._amg_runner
+        if r is None or not r.is_alive():
+            self._send(amg_make_job_error(AmgErrorCode.JOB_NOT_FOUND,
+                                          "実行中のジョブはありません", request_id=request_id))
+            return
+        self._send(amg_make_job_event(AmgEvent.BATCH_PROGRESS, r.job_id,
+                                      request_id=request_id, **r.status_snapshot()))
+
+    def _cmd_amg_release(self, msg: dict, request_id) -> None:
+        job_id = msg.get("job_id")
+        r = self._amg_runner
+        if r is not None and r.is_alive():
+            r.cancel()
+            r.join(timeout=30.0)
+        if self._amg_manager is not None:
+            try:
+                self._amg_manager.release()
+            except Exception:
+                pass
+            self._amg_manager = None
+        self._amg_runner = None
+        self._send(amg_make_job_event(AmgEvent.RELEASED,
+                                      job_id or (r.job_id if r else ""), request_id=request_id))
+
     def _cmd_shutdown(self, request_id) -> None:
         self._send(protocol.make_event(protocol.Event.SHUTTING_DOWN, request_id))
+        ar = self._amg_runner
+        if ar is not None and ar.is_alive():
+            ar.cancel()
+            ar.join(timeout=30.0)
+        if self._amg_manager is not None:
+            try:
+                self._amg_manager.release()
+            except Exception:
+                pass
         r = self._prop_runner
         if r is not None and r.is_alive():
             r.cancel()

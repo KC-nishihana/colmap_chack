@@ -20,3 +20,11 @@ propagation_runtime/
 # 環境診断・検証・ベンチマークの出力
 logs/
 .vscode/
+
+# ----- その他 -----
+# 一時ファイルやロゴなどのアセット
+temp/
+assets/logos/
+*test
+test*
+colmap_mask_editor/test*

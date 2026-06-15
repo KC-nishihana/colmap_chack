@@ -68,6 +68,29 @@ _DEFAULTS: dict[str, Any] = {
     "propagation/warn_component_count": 10,
     "propagation/warn_low_iou": 5,             # % (IoU*100)
     "propagation/last_apply_mode": "add",      # add / exclude / replace
+
+    # ----- v0.8 全画像自動分割 (SAM 2.1 Automatic Mask Generator) -----
+    "amg/default_scope": "unprocessed",        # all/selected/unprocessed/stale/failed/current
+    "amg/default_preset": "fast",              # fast/standard/detailed/custom
+    "amg/default_model": "sam2.1_hiera_small",
+    "amg/points_per_side": 16,
+    "amg/points_per_batch": 64,
+    "amg/pred_iou_thresh": 0.85,
+    "amg/stability_score_thresh": 0.95,
+    "amg/box_nms_thresh": 0.7,
+    "amg/crop_n_layers": 0,
+    "amg/crop_n_points_downscale_factor": 1,
+    "amg/min_mask_region_area": 100,
+    "amg/use_m2m": False,
+    "amg/multimask_output": True,
+    "amg/oom_retry": True,
+    "amg/review_overlay_opacity": 50,          # %
+    "amg/review_min_area": 0,
+    "amg/review_max_area_ratio": 100,          # %
+    "amg/review_min_iou": 0,                   # % (IoU*100)
+    "amg/review_min_stability": 0,             # % (stability*100)
+    "amg/final_mask_mode": "exclude_remove",   # exclude_remove/keep_only/add_remove
+    "amg/rle_decode_cache_size": 12,
 }
 
 # 各設定の有効範囲 (下限, 上限) - 数値型のみ
@@ -96,6 +119,17 @@ _CLAMPS: dict[str, tuple[int, int]] = {
     "propagation/warn_area_growth_ratio": (100, 5000),
     "propagation/warn_component_count":  (1, 1000),
     "propagation/warn_low_iou":          (0, 100),
+    "amg/points_per_side":               (4, 64),
+    "amg/points_per_batch":              (1, 256),
+    "amg/crop_n_layers":                 (0, 4),
+    "amg/crop_n_points_downscale_factor": (1, 4),
+    "amg/min_mask_region_area":          (0, 100000),
+    "amg/review_overlay_opacity":        (0, 100),
+    "amg/review_min_area":               (0, 100000000),
+    "amg/review_max_area_ratio":         (0, 100),
+    "amg/review_min_iou":                (0, 100),
+    "amg/review_min_stability":          (0, 100),
+    "amg/rle_decode_cache_size":         (1, 64),
 }
 
 
@@ -191,6 +225,7 @@ class AppSettings:
 
         v1 -> v2 (v0.6): AIセグメンテーション設定キーを追加。
         v2 -> v3 (v0.7): 画像伝播 (propagation/*) 設定キーを追加。
+        v3 -> v4 (v0.8): 全画像自動分割 (amg/*) 設定キーを追加。
         いずれも追加のみ (破壊的変更なし)。既存キーはキー名変更がないため保持され、
         欠けているキーは get() がデフォルトを返すので明示書き込みは不要。
         既存ユーザー設定を失わないことが目的。schema_version のみ更新する。

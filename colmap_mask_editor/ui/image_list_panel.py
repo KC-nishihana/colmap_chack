@@ -205,6 +205,15 @@ class ImageListPanel(QWidget):
             return self._filtered_indices[row]
         return -1
 
+    def selected_global_indices(self) -> list[int]:
+        """複数選択中のグローバルインデックス（未選択は空）。V0.8 AMG が使用。"""
+        rows = sorted(i.row() for i in self._list.selectionModel().selectedRows())
+        if not rows:
+            cur = self._list.currentRow()
+            rows = [cur] if cur >= 0 else []
+        return [self._filtered_indices[r] for r in rows
+                if 0 <= r < len(self._filtered_indices)]
+
     # ------------------------------------------------------------------ #
     # 内部
     # ------------------------------------------------------------------ #

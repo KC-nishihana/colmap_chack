@@ -59,6 +59,12 @@ from core.propagation_apply_worker import ApplyTarget, PropagationApplyWorker, u
 from ui.propagation_controller import PropagationController
 from ui.propagation_panel import PropagationPanel
 from ui.propagation_review_dialog import PropagationReviewDialog
+from ai import amg_cache, amg_manifest
+from core.version import SAM2_COMMIT_SHA
+from core.amg_apply_worker import AmgApplyError, AmgApplyTarget, apply_amg_batch
+from ui.amg_batch_panel import AmgBatchPanel
+from ui.amg_controller import AmgController
+from ui.amg_review_widget import AmgReviewWidget
 
 _log = logging.getLogger(__name__)
 
@@ -258,13 +264,20 @@ class MainWindow(QMainWindow):
         tab1_scroll.setWidget(self._build_grabcut_tab())
         self._right_tab_widget.addTab(tab1_scroll, "GrabCut")
 
-        # AIセグメント = 「単一画像」「画像伝播」を切替表示 (V0.7)。
+        # AIセグメント = 「単一画像」「全画像自動分割」「画像伝播(実験的)」を切替表示。
         # ネストしたタブは縦領域を圧迫するため、上部トグル + QStackedWidget にする。
         self._prop_panel = PropagationPanel()
         self._prop_controller = PropagationController(self._ai_session.process_manager, self)
         self._last_apply_record: Optional[dict] = None
         self._prop_apply_worker = None
         self._wire_propagation()
+
+        # V0.8: 全画像自動分割パネル + コントローラ
+        self._amg_panel = AmgBatchPanel()
+        self._amg_controller = AmgController(self._ai_session.process_manager, self)
+        self._amg_review_dialog = None
+        self._amg_targets: list[dict] = []
+        self._wire_amg()
 
         ai_tab = QWidget()
         ai_v = QVBoxLayout(ai_tab)
@@ -274,9 +287,11 @@ class MainWindow(QMainWindow):
         ai_toggle = QHBoxLayout()
         ai_toggle.setSpacing(2)
         self._ai_view_single = QPushButton("単一画像")
-        self._ai_view_prop = QPushButton("画像伝播")
+        self._ai_view_amg = QPushButton("全画像自動分割")
+        self._ai_view_prop = QPushButton("画像伝播(実験的)")
+        self._ai_view_prop.setToolTip("V0.7 の実験的機能です。V0.8 の主機能は「全画像自動分割」です。")
         view_group = QButtonGroup(self)
-        for i, b in enumerate((self._ai_view_single, self._ai_view_prop)):
+        for i, b in enumerate((self._ai_view_single, self._ai_view_amg, self._ai_view_prop)):
             b.setCheckable(True)
             view_group.addButton(b, i)
             ai_toggle.addWidget(b)
@@ -289,6 +304,11 @@ class MainWindow(QMainWindow):
         single_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         single_scroll.setWidget(self._build_ai_tab())
         self._ai_stack.addWidget(single_scroll)
+        amg_scroll = QScrollArea()
+        amg_scroll.setWidgetResizable(True)
+        amg_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        amg_scroll.setWidget(self._amg_panel)
+        self._ai_stack.addWidget(amg_scroll)
         prop_scroll = QScrollArea()
         prop_scroll.setWidgetResizable(True)
         prop_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -878,6 +898,15 @@ class MainWindow(QMainWindow):
             "grabcut/use_existing_mask": self._grabcut_use_existing_mask_cb.isChecked(),
             "grabcut/hint_radius":    self._hint_radius_spin.value(),
         }
+        # V0.8: 全画像自動分割の選択を保存 (次回起動時の既定にする)
+        try:
+            amg_opts = self._amg_panel.options()
+            values["amg/default_scope"] = amg_opts["scope"]
+            values["amg/default_preset"] = amg_opts["preset"]
+            values["amg/default_model"] = amg_opts["model_id"]
+            values["amg/oom_retry"] = amg_opts["oom_retry"]
+        except Exception:
+            pass
         s.save(values)
         _log.debug("設定を保存しました")
 
@@ -2106,6 +2135,290 @@ class MainWindow(QMainWindow):
         c.completed.connect(self._prop_on_completed)
         c.cancelled.connect(self._prop_update_counts)
         c.failed.connect(self._prop_on_failed)
+
+    # ------------------------------------------------------------------ #
+    # V0.8: 全画像自動分割 (AMG)
+    # ------------------------------------------------------------------ #
+
+    def _wire_amg(self) -> None:
+        p, c = self._amg_panel, self._amg_controller
+        p.load_defaults(self._app_settings)
+        p.preflight_requested.connect(self._amg_preflight)
+        p.start_requested.connect(self._amg_start)
+        p.pause_requested.connect(c.pause)
+        p.resume_requested.connect(c.resume)
+        p.cancel_requested.connect(c.cancel)
+        p.retry_failed_requested.connect(self._amg_retry_failed)
+        p.review_requested.connect(self._amg_open_review)
+        p.validate_cache_requested.connect(self._amg_validate_cache)
+        c.started.connect(self._amg_on_started)
+        c.image_started.connect(lambda m: p.set_current(m.get("image_key", "-")))
+        c.image_completed.connect(self._amg_on_image_completed)
+        c.image_skipped.connect(self._amg_on_progress)
+        c.image_failed.connect(self._amg_on_progress)
+        c.progress.connect(self._amg_on_progress)
+        c.paused.connect(lambda: p.set_status_text("一時停止中"))
+        c.resumed.connect(lambda: p.set_status_text("解析中"))
+        c.cancelling.connect(lambda: p.set_status_text("キャンセル中 (現画像完了後に停止)"))
+        c.cancelled.connect(self._amg_on_finished)
+        c.completed.connect(self._amg_on_finished)
+        c.failed.connect(self._amg_on_failed)
+
+    def _amg_model_dict(self) -> dict:
+        model_id = self._ai_session.model_id or self._amg_panel.options()["model_id"]
+        ckpt = self._prop_checkpoint(model_id)
+        fp = ""
+        try:
+            st = ckpt.stat()
+            fp = f"{st.st_size}-{st.st_mtime_ns}"
+        except OSError:
+            pass
+        return {"model_id": model_id, "sam2_commit": SAM2_COMMIT_SHA,
+                "checkpoint_fingerprint": fp}
+
+    def _amg_all_candidates(self) -> list[dict]:
+        """プロジェクト全画像を {image_key, source_path, entry_index} で返す。"""
+        if self._project is None:
+            return []
+        return [{"image_key": str(e.rel_path), "source_path": str(e.image_path),
+                 "entry_index": i} for i, e in enumerate(self._project.entries)]
+
+    def _amg_cache_state(self, image_key: str, source_path: str):
+        cache_dir = amg_manifest.cache_dir_for(self._project.root, image_key)
+        return amg_cache.evaluate_cache(
+            cache_dir, source_path=source_path,
+            model=self._amg_model_dict(), generator=self._amg_panel.generator_settings(),
+        )
+
+    def _amg_batch_manifest(self) -> dict:
+        path = (self._project.root / amg_manifest.CACHE_DIRNAME
+                / amg_manifest.BATCH_MANIFEST_NAME)
+        try:
+            return amg_manifest.read_json(path)
+        except (OSError, ValueError):
+            return {"images": {}}
+
+    def _amg_resolve_targets(self, scope: str) -> list[dict]:
+        if self._project is None:
+            return []
+        cands = self._amg_all_candidates()
+        if scope == "all":
+            return cands
+        if scope == "current":
+            return [c for c in cands if c["entry_index"] == self._current_index]
+        if scope == "selected":
+            sel = set(self._list_panel.selected_global_indices())
+            return [c for c in cands if c["entry_index"] in sel]
+        if scope == "failed":
+            batch = self._amg_batch_manifest().get("images", {})
+            return [c for c in cands
+                    if batch.get(c["image_key"], {}).get("status") == "failed"]
+        # unprocessed / stale はキャッシュ状態で判定
+        out = []
+        for c in cands:
+            st = self._amg_cache_state(c["image_key"], c["source_path"]).state
+            if scope == "unprocessed" and st in (amg_cache.MISSING, amg_cache.CORRUPT):
+                out.append(c)
+            elif scope == "stale" and st == amg_cache.STALE:
+                out.append(c)
+        return out
+
+    def _amg_preflight(self) -> bool:
+        if self._project is None:
+            QMessageBox.warning(self, "全画像自動分割", "プロジェクトを開いてください。")
+            return False
+        opts = self._amg_panel.options()
+        targets = self._amg_resolve_targets(opts["scope"])
+        if not targets:
+            self._amg_panel.set_summary("対象画像がありません。")
+            return False
+        reusable = reanalyze = failed = 0
+        for t in targets:
+            st = self._amg_cache_state(t["image_key"], t["source_path"]).state
+            if st == amg_cache.REUSABLE and not opts["force"]:
+                reusable += 1
+            else:
+                reanalyze += 1
+            if st == amg_cache.CORRUPT:
+                failed += 1
+        # 概算ディスク使用量 (1画像あたり ~0.5MB と仮定)
+        est_mb = round(reanalyze * 0.5, 1)
+        model = self._amg_model_dict()["model_id"]
+        self._amg_panel.set_summary(
+            f"対象 {len(targets)} 枚 / 再利用 {reusable} / 再解析 {reanalyze} / "
+            f"破損 {failed}\n推定追加ディスク ~{est_mb} MB / モデル {model} / "
+            f"プリセット {opts['preset']}")
+        return True
+
+    def _amg_can_start(self) -> bool:
+        if self._project is None:
+            QMessageBox.warning(self, "全画像自動分割", "プロジェクトを開いてください。")
+            return False
+        if not self._ai_session.is_worker_running() or self._ai_session.model_id is None:
+            QMessageBox.information(
+                self, "全画像自動分割",
+                "先に「単一画像」タブで Worker を起動し、モデルをロードしてください。")
+            return False
+        if not self._ai_session.cuda_extension_loaded:
+            QMessageBox.warning(self, "全画像自動分割", "SAM 2 CUDA拡張が無効です。")
+            return False
+        if self._amg_controller.is_running():
+            QMessageBox.information(self, "全画像自動分割", "すでに解析を実行中です。")
+            return False
+        return True
+
+    def _amg_start(self, *, scope_override=None, force_override=None) -> None:
+        if not self._amg_can_start():
+            return
+        opts = self._amg_panel.options()
+        scope = scope_override or opts["scope"]
+        targets = self._amg_resolve_targets(scope)
+        if not targets:
+            QMessageBox.information(self, "全画像自動分割", "対象画像がありません。")
+            return
+        images = [{"image_key": t["image_key"], "source_path": t["source_path"]}
+                  for t in targets]
+        self._amg_panel.set_progress(0, len(images))
+        self._amg_panel.set_counts(0, 0, 0)
+        self._amg_panel.set_running(True, paused=False, has_results=False)
+        self._amg_panel.set_status_text("解析中")
+        self._amg_controller.start(
+            project_root=str(self._project.root), images=images,
+            settings=opts["settings"], preset=opts["preset"], model=self._amg_model_dict(),
+            force=opts["force"] if force_override is None else force_override,
+            oom_retry=opts["oom_retry"],
+            retry_single=False,
+        )
+
+    def _amg_retry_failed(self) -> None:
+        self._amg_start(scope_override="failed", force_override=True)
+
+    def _amg_on_started(self, _job_id: str) -> None:
+        self._amg_panel.set_running(True, paused=False, has_results=False)
+
+    def _amg_on_image_completed(self, msg: dict) -> None:
+        self._amg_panel.set_current(msg.get("image_key", "-"), msg.get("segment_count"))
+        self._amg_on_progress(msg)
+
+    def _amg_on_progress(self, msg: dict) -> None:
+        p = self._amg_panel
+        p.set_progress(int(msg.get("processed", 0)), int(msg.get("total", 0)))
+        p.set_counts(int(msg.get("succeeded", 0)), int(msg.get("reused", 0)),
+                     int(msg.get("failed", 0)))
+        if "peak_vram_mb" in msg:
+            p.set_memory(int(msg.get("peak_vram_mb", 0)))
+
+    def _amg_on_finished(self, _msg=None) -> None:
+        self._amg_panel.set_running(False, paused=False, has_results=True)
+        self._amg_panel.set_status_text("完了 (レビュー可能)")
+
+    def _amg_on_failed(self, code: str, message: str) -> None:
+        self._amg_panel.set_running(False, paused=False, has_results=True)
+        self._amg_panel.set_status_text(f"エラー: {code}")
+        QMessageBox.warning(self, "全画像自動分割", f"{code}\n{message}")
+
+    def _amg_review_items(self) -> list[dict]:
+        """ready なキャッシュを持つ画像を一覧化する。"""
+        if self._project is None:
+            return []
+        batch = self._amg_batch_manifest().get("images", {})
+        items = []
+        for c in self._amg_all_candidates():
+            key = c["image_key"]
+            entry = batch.get(key)
+            cache_dir = amg_manifest.cache_dir_for(self._project.root, key)
+            if not (cache_dir / amg_manifest.MANIFEST_NAME).exists():
+                continue
+            items.append({
+                "image_key": key, "source_path": c["source_path"],
+                "cache_id": amg_manifest.cache_id_for(key),
+                "status": (entry or {}).get("status", "ready"),
+                "review_completed": (entry or {}).get("review_completed", False),
+            })
+        return items
+
+    def _amg_open_review(self) -> None:
+        items = self._amg_review_items()
+        if not items:
+            QMessageBox.information(self, "レビュー", "レビュー可能な解析結果がありません。")
+            return
+        size = int(self._app_settings.get("amg/rle_decode_cache_size", 12))
+        dlg = AmgReviewWidget(self._project.root, items, parent=self, decode_cache_size=size)
+        dlg.final_mask_requested.connect(self._amg_apply_final_single)
+        dlg.final_mask_batch_requested.connect(self._amg_apply_final_batch)
+        self._amg_review_dialog = dlg
+        dlg.show()
+
+    def _amg_entry_for_key(self, image_key: str):
+        for e in self._project.entries:
+            if str(e.rel_path) == image_key:
+                return e
+        return None
+
+    def _amg_apply_final_single(self, image_key: str, mode: str) -> None:
+        self._amg_apply_final_batch([image_key], mode)
+
+    def _amg_apply_final_batch(self, image_keys: list, mode: str) -> None:
+        if self._project is None or not image_keys:
+            return
+        targets = []
+        for key in image_keys:
+            entry = self._amg_entry_for_key(key)
+            if entry is None:
+                continue
+            cache_dir = amg_manifest.cache_dir_for(self._project.root, key)
+            save_path = get_source_mask_save_path(self._project.root, entry)
+            targets.append(AmgApplyTarget(key, str(cache_dir), str(save_path)))
+        if not targets:
+            return
+        backup_dir = self._project.root / amg_manifest.CACHE_DIRNAME / "_apply_backup"
+        try:
+            outcome = apply_amg_batch(targets, mode, backup_dir, job_id="amg-final")
+        except AmgApplyError as e:
+            QMessageBox.warning(self, "最終マスク生成", f"生成に失敗しました:\n{e}")
+            return
+        self._amg_last_apply_record = outcome.record
+        # 現在画像が対象なら再読込して反映
+        cur = self._amg_entry_for_key_current()
+        if cur in image_keys:
+            self._reload_current_mask()
+        QMessageBox.information(
+            self, "最終マスク生成",
+            f"{len(outcome.applied)} 枚の最終マスクを生成しました。")
+
+    def _amg_entry_for_key_current(self):
+        if self._project is None or self._current_index < 0:
+            return None
+        return str(self._project.entries[self._current_index].rel_path)
+
+    def _reload_current_mask(self) -> None:
+        """現在画像のマスクを保存先から再読込して編集中マスクへ反映する。"""
+        if self._project is None or self._current_index < 0:
+            return
+        try:
+            self._select_image(self._current_index)
+        except Exception:
+            _log.exception("最終マスク反映のための再読込に失敗")
+
+    def _amg_validate_cache(self) -> None:
+        if self._project is None:
+            QMessageBox.warning(self, "キャッシュ検証", "プロジェクトを開いてください。")
+            return
+        ok = corrupt = stale = 0
+        for c in self._amg_all_candidates():
+            cache_dir = amg_manifest.cache_dir_for(self._project.root, c["image_key"])
+            if not (cache_dir / amg_manifest.MANIFEST_NAME).exists():
+                continue
+            st = self._amg_cache_state(c["image_key"], c["source_path"]).state
+            if st == amg_cache.REUSABLE:
+                ok += 1
+            elif st == amg_cache.CORRUPT:
+                corrupt += 1
+            elif st == amg_cache.STALE:
+                stale += 1
+        QMessageBox.information(
+            self, "キャッシュ検証",
+            f"正常: {ok}\n古い(stale): {stale}\n破損(corrupt): {corrupt}")
 
     def _prop_checkpoint(self, model_id: str) -> Path:
         ckpt_dir = self._app_settings.get_ai_checkpoint_dir()

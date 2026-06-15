@@ -6,8 +6,8 @@ from core.app_settings import AppSettings
 from core.version import SETTINGS_SCHEMA_VERSION
 
 
-def test_schema_version_is_3():
-    assert SETTINGS_SCHEMA_VERSION == 3
+def test_schema_version_is_current():
+    assert SETTINGS_SCHEMA_VERSION == 4
 
 
 def test_propagation_defaults(tmp_path):
@@ -41,7 +41,7 @@ def test_migrate_v2_to_v3_preserves_existing(tmp_path):
     raw.sync()
 
     app = AppSettings(f)
-    assert app.schema_version == 3
+    assert app.schema_version == SETTINGS_SCHEMA_VERSION
     # 既存 v2 設定は保持される
     assert app.get("edit/brush_size") == 77
     assert app.get("ai/precision") == "fp16"
