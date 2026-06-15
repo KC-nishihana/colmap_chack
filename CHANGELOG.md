@@ -3,6 +3,25 @@
 > このファイルがリリースノートの正本です。
 > アプリ同梱の `colmap_mask_editor/CHANGELOG.md` はこのファイルへのポインタです。
 
+## v0.10 (2026-06-16) — REMOVE_ONLY「不要領域だけ選択」レビュー方式
+
+- V0.8 AMG を主軸に「例外レビュー方式」(`remove_only`) を追加。全画素を暗黙 KEEP とし、不要候補だけを REMOVE する
+- レビュー方式を選択可能に: 「不要領域だけ選択（推奨）」と「必要・不要を個別設定（従来方式）」。従来 standard 方式は維持
+- 判断状態の解釈: UNREVIEWED=暗黙 KEEP / REMOVE=明示除外 / KEEP=互換用。未確認が残っていても最終マスク生成・レビュー完了が可能
+- 基準マスク: 現在の通常マスク or 画像全体（全面 255）。既存マスクのサイズ不一致は中止（全面へ黙って置換しない）
+- 最終マスク合成は既存 `amg_mask_composer.compose_final_mask(MODE_EXCLUDE_REMOVE)` を再利用（専用の重複処理を作らない）
+- 累積 REMOVE プレビュー（半透明赤）・現在候補（水色）・基準マスク外（暗いグレー）。表示切替と透明度スライダー
+- 進捗表示を REMOVE 指定数・除外画素/率・有効画素/率・候補総数・確認対象候補へ刷新
+- RLE 同士の intersection / union / IoU / containment を dense 復号なしで計算 (`amg_rle_overlap`)
+- 重複候補のグループ化と代表候補表示、`review_index.npz`（`allow_pickle=False`・dense 禁止・原子保存・SHA-256/しきい値で stale）
+- REMOVE 済み領域に 98% 以上包含された候補の表示抑制（判断値は改変しない）
+- 判断後の次候補自動移動、レビュー完了後の次画像自動移動、確認順の並べ替え（面積/端接触/品質/確認順スコア/SAM 順）
+- 複数候補の一括 REMOVE / 一括解除、候補判断専用の Undo（通常マスク Undo と分離・最大 100）
+- 重複グループ計算は GUI スレッド外の CPU Worker (`AmgReviewIndexWorker`)。GUI は torch / sam2 を import しない
+- manifest の review ブロックを後方互換拡張（`workflow` 無しは standard 扱い）。REMOVE_ONLY は remove のみ保存
+- 設定スキーマ v5→v6（`amg/review_workflow`, `amg/remove_only/*` を追加。既存設定は保持）
+- V0.9 完全被覆リージョン機能は維持
+
 ## v0.9 (2026-06-15) — 完全被覆・階層型リージョン分割
 
 - 全画素を重複なくリージョンへ割り当てる完全被覆 partition

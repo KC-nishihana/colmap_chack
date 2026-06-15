@@ -56,6 +56,60 @@ def test_build_image_manifest_decisions_unreviewed():
     assert man["settings_hash"] == M.settings_hash(g, MODEL)
 
 
+def _manifest_with(tmp_path, segment_ids=(1, 2, 3)):
+    g = M.preset_settings("fast")
+    man = M.build_image_manifest(
+        image_key="k", source_path="C:/p/x.jpg", width=10, height=10,
+        model=MODEL, generator=g, preset="fast", segment_count=len(segment_ids),
+        segment_ids=list(segment_ids), segments_npz_sha256="x" * 64,
+        processing_time_sec=1.0, fingerprint={"file_size": 1, "mtime_ns": 2},
+    )
+    path = tmp_path / "manifest.json"
+    M.atomic_write_json(path, man)
+    return path
+
+
+def test_workflow_defaults_standard(tmp_path):
+    path = _manifest_with(tmp_path)
+    man = json.loads(path.read_text(encoding="utf-8"))
+    assert M.get_review_workflow(man) == M.REVIEW_WORKFLOW_STANDARD
+
+
+def test_update_manifest_review_remove_only_prunes(tmp_path):
+    path = _manifest_with(tmp_path)
+    # remove_only: remove だけ保存し、keep / unreviewed は書かない
+    M.update_manifest_review(
+        path, decisions={"1": "remove", "2": "keep", "3": "unreviewed"},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY,
+        base_mode="existing_or_full",
+        ui={"representatives_only": True, "hide_covered": True,
+            "auto_advance": True, "sort_mode": "priority"},
+        completed=True,
+    )
+    man = json.loads(path.read_text(encoding="utf-8"))
+    assert man["review"]["workflow"] == "remove_only"
+    assert man["review"]["decisions"] == {"1": "remove"}
+    assert man["review"]["base_mode"] == "existing_or_full"
+    assert man["review"]["ui"]["sort_mode"] == "priority"
+    assert man["review"]["completed"] is True
+
+
+def test_update_manifest_review_standard_fills(tmp_path):
+    path = _manifest_with(tmp_path, segment_ids=(1, 2))
+    M.update_manifest_review(
+        path, decisions={"1": "keep"}, workflow=M.REVIEW_WORKFLOW_STANDARD)
+    man = json.loads(path.read_text(encoding="utf-8"))
+    # standard は欠けた候補を unreviewed で補完する
+    assert man["review"]["decisions"] == {"1": "keep", "2": "unreviewed"}
+
+
+def test_update_manifest_review_rejects_unknown(tmp_path):
+    path = _manifest_with(tmp_path)
+    with pytest.raises(ValueError):
+        M.update_manifest_review(
+            path, decisions={"1": "bogus"}, workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY)
+
+
 def test_update_manifest_decisions_atomic(tmp_path):
     g = M.preset_settings("fast")
     man = M.build_image_manifest(

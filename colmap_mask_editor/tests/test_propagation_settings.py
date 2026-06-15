@@ -7,7 +7,7 @@ from core.version import SETTINGS_SCHEMA_VERSION
 
 
 def test_schema_version_is_current():
-    assert SETTINGS_SCHEMA_VERSION == 5  # v0.9
+    assert SETTINGS_SCHEMA_VERSION == 6  # v0.10
 
 
 def test_propagation_defaults(tmp_path):

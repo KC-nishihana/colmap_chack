@@ -18,10 +18,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ai.amg_protocol import AmgImageStatus
-from ai.amg_review_state import normalize_decisions
+from ai.amg_review_state import VALID_DECISIONS, SegmentDecision, normalize_decisions
 
 MANIFEST_SCHEMA_VERSION = 1
 BATCH_MANIFEST_SCHEMA_VERSION = 1
+
+# レビュー方式 (manifest.review.workflow)。従来データに workflow が無ければ standard。
+REVIEW_WORKFLOW_STANDARD = "standard"
+REVIEW_WORKFLOW_REMOVE_ONLY = "remove_only"
 
 CACHE_DIRNAME = "segmentation_cache"
 IMAGES_DIRNAME = "images"
@@ -104,6 +108,10 @@ __all__ = [
     "read_json",
     "build_image_manifest",
     "update_manifest_decisions",
+    "update_manifest_review",
+    "get_review_workflow",
+    "REVIEW_WORKFLOW_STANDARD",
+    "REVIEW_WORKFLOW_REMOVE_ONLY",
     "build_batch_manifest",
     "update_batch_image_entry",
 ]
@@ -284,6 +292,58 @@ def update_manifest_decisions(
     review = manifest.setdefault("review", {})
     review["decisions"] = normalized
     review["updated_at"] = now_iso()
+    if completed is not None:
+        review["completed"] = bool(completed)
+    atomic_write_json(manifest_path, manifest)
+    return manifest
+
+
+def get_review_workflow(manifest: dict[str, Any]) -> str:
+    """manifest からレビュー方式を取得する。未設定 (従来データ) は standard。"""
+    return manifest.get("review", {}).get("workflow", REVIEW_WORKFLOW_STANDARD)
+
+
+def update_manifest_review(
+    manifest_path,
+    *,
+    decisions: dict[str, str],
+    workflow: str = REVIEW_WORKFLOW_STANDARD,
+    base_mode: Optional[str] = None,
+    ui: Optional[dict[str, Any]] = None,
+    completed: Optional[bool] = None,
+) -> dict[str, Any]:
+    """
+    manifest.json の review ブロックを後方互換で更新する (NPZ は触らない)。
+
+    workflow=remove_only のときは decisions を最小化し、REMOVE だけを保存する
+    (大量の keep / unreviewed を書かない)。standard のときは従来どおり全件正規化する。
+    base_mode / ui / completed は指定時のみ更新する。
+    """
+    manifest = read_json(manifest_path)
+    segment_ids = list(manifest.get("review", {}).get("decisions", {}).keys())
+    valid_ids = {str(s) for s in segment_ids}
+
+    if workflow == REVIEW_WORKFLOW_REMOVE_ONLY:
+        normalized: dict[str, str] = {}
+        for key, value in (decisions or {}).items():
+            skey = str(key)
+            if value not in VALID_DECISIONS:
+                raise ValueError(f"segment {skey}: 不明な判断状態 {value!r}")
+            if valid_ids and skey not in valid_ids:
+                continue
+            if value == SegmentDecision.REMOVE.value:   # 最小保存: remove のみ
+                normalized[skey] = value
+    else:
+        normalized = normalize_decisions(decisions, segment_ids=segment_ids or None)
+
+    review = manifest.setdefault("review", {})
+    review["workflow"] = workflow
+    review["decisions"] = normalized
+    review["updated_at"] = now_iso()
+    if base_mode is not None:
+        review["base_mode"] = base_mode
+    if ui is not None:
+        review["ui"] = dict(ui)
     if completed is not None:
         review["completed"] = bool(completed)
     atomic_write_json(manifest_path, manifest)

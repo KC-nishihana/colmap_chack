@@ -92,6 +92,20 @@ _DEFAULTS: dict[str, Any] = {
     "amg/final_mask_mode": "exclude_remove",   # exclude_remove/keep_only/add_remove
     "amg/rle_decode_cache_size": 12,
 
+    # ----- v0.10 REMOVE_ONLY (不要領域だけ選択) レビュー方式 -----
+    "amg/review_workflow": "remove_only",          # remove_only/standard
+    "amg/remove_only/base_mode": "existing_or_full",  # existing_or_full/full
+    "amg/remove_only/auto_advance": True,
+    "amg/remove_only/auto_next_image": True,
+    "amg/remove_only/representatives_only": True,
+    "amg/remove_only/hide_covered": True,
+    "amg/remove_only/group_iou_threshold": 85,     # 0..100 (使用時 /100)
+    "amg/remove_only/group_containment_threshold": 95,  # 0..100 (使用時 /100)
+    "amg/remove_only/covered_threshold": 98,       # 0..100 (使用時 /100)
+    "amg/remove_only/default_sort": "priority",    # priority/area/edge/quality/sam
+    "amg/remove_only/undo_limit": 100,
+    "amg/remove_only/show_base_outside": True,
+
     # ----- v0.9 完全被覆・階層型リージョン分割 -----
     "partition/default_preset": "coarse",      # coarse/standard/detailed/custom
     "partition/backend": "auto",               # auto/slic/grid_watershed
@@ -152,6 +166,10 @@ _CLAMPS: dict[str, tuple[int, int]] = {
     "amg/review_min_iou":                (0, 100),
     "amg/review_min_stability":          (0, 100),
     "amg/rle_decode_cache_size":         (1, 64),
+    "amg/remove_only/group_iou_threshold":         (0, 100),
+    "amg/remove_only/group_containment_threshold": (0, 100),
+    "amg/remove_only/covered_threshold":           (0, 100),
+    "amg/remove_only/undo_limit":                  (1, 1000),
     "partition/working_max_side":        (0, 8192),
     "partition/base_region_count":       (50, 20000),
     "partition/default_visible_count":   (2, 2000),
@@ -264,6 +282,7 @@ class AppSettings:
         v2 -> v3 (v0.7): 画像伝播 (propagation/*) 設定キーを追加。
         v3 -> v4 (v0.8): 全画像自動分割 (amg/*) 設定キーを追加。
         v4 -> v5 (v0.9): 完全被覆・階層型リージョン分割 (partition/*) 設定キーを追加。
+        v5 -> v6 (v0.10): REMOVE_ONLY (amg/review_workflow, amg/remove_only/*) 設定キーを追加。
         いずれも追加のみ (破壊的変更なし)。既存キーはキー名変更がないため保持され、
         欠けているキーは get() がデフォルトを返すので明示書き込みは不要。
         既存ユーザー設定を失わないことが目的。schema_version のみ更新する。

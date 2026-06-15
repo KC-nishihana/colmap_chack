@@ -2469,11 +2469,15 @@ class MainWindow(QMainWindow):
                 continue
             if self._amg_cache_state(key, c["source_path"]).state != amg_cache.REUSABLE:
                 continue
+            entry_obj = self._amg_entry_for_key(key)
+            mask_path = (str(get_source_mask_save_path(self._project.root, entry_obj))
+                         if entry_obj is not None else None)
             items.append({
                 "image_key": key, "source_path": c["source_path"],
                 "cache_id": amg_manifest.cache_id_for(key),
                 "status": (entry or {}).get("status", "ready"),
                 "review_completed": (entry or {}).get("review_completed", False),
+                "mask_path": mask_path,
             })
         return items
 
@@ -2483,7 +2487,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "レビュー", "レビュー可能な解析結果がありません。")
             return
         size = int(self._app_settings.get("amg/rle_decode_cache_size", 12))
-        dlg = AmgReviewWidget(self._project.root, items, parent=self, decode_cache_size=size)
+        s = self._app_settings
+        dlg = AmgReviewWidget(
+            self._project.root, items, parent=self, decode_cache_size=size,
+            workflow=s.get("amg/review_workflow", "remove_only"),
+            base_mode=s.get("amg/remove_only/base_mode", "existing_or_full"),
+            iou_threshold=int(s.get("amg/remove_only/group_iou_threshold", 85)) / 100.0,
+            containment_threshold=int(s.get("amg/remove_only/group_containment_threshold", 95)) / 100.0,
+            covered_threshold=int(s.get("amg/remove_only/covered_threshold", 98)) / 100.0,
+            auto_advance=bool(s.get("amg/remove_only/auto_advance", True)),
+            auto_next_image=bool(s.get("amg/remove_only/auto_next_image", True)),
+            representatives_only=bool(s.get("amg/remove_only/representatives_only", True)),
+            hide_covered=bool(s.get("amg/remove_only/hide_covered", True)),
+            default_sort=s.get("amg/remove_only/default_sort", "priority"),
+            undo_limit=int(s.get("amg/remove_only/undo_limit", 100)),
+            show_base_outside=bool(s.get("amg/remove_only/show_base_outside", True)),
+        )
         dlg.final_mask_requested.connect(self._amg_apply_final_single)
         dlg.final_mask_batch_requested.connect(self._amg_apply_final_batch)
         self._amg_review_dialog = dlg

@@ -129,7 +129,7 @@ def _make_project(tmp_path):
 
 def test_review_widget_builds_and_lists_segments(qtbot, tmp_path):
     items, key, cache_dir = _make_project(tmp_path)
-    w = AmgReviewWidget(tmp_path, items)
+    w = AmgReviewWidget(tmp_path, items, workflow="standard")
     qtbot.addWidget(w)
     assert w._table.rowCount() == 2
     assert w._image_list.count() == 1
@@ -137,7 +137,7 @@ def test_review_widget_builds_and_lists_segments(qtbot, tmp_path):
 
 def test_review_decision_updates_manifest_only(qtbot, tmp_path):
     items, key, cache_dir = _make_project(tmp_path)
-    w = AmgReviewWidget(tmp_path, items)
+    w = AmgReviewWidget(tmp_path, items, workflow="standard")
     qtbot.addWidget(w)
     npz_before = (cache_dir / "segments.npz").read_bytes()
     # segment_id 1 を KEEP, 2 を REMOVE
@@ -153,7 +153,7 @@ def test_review_decision_updates_manifest_only(qtbot, tmp_path):
 
 def test_review_click_selects_smallest_candidate(qtbot, tmp_path):
     items, key, cache_dir = _make_project(tmp_path)
-    w = AmgReviewWidget(tmp_path, items)
+    w = AmgReviewWidget(tmp_path, items, workflow="standard")
     qtbot.addWidget(w)
     # (10,10) は big と small の両方に含まれる -> 小さい候補(id2)が KEEP される
     w._on_canvas_clicked(10, 10, 1, False)
@@ -164,7 +164,7 @@ def test_review_click_selects_smallest_candidate(qtbot, tmp_path):
 
 def test_review_final_mask_signal(qtbot, tmp_path):
     items, key, cache_dir = _make_project(tmp_path)
-    w = AmgReviewWidget(tmp_path, items)
+    w = AmgReviewWidget(tmp_path, items, workflow="standard")
     qtbot.addWidget(w)
     w.set_decision_by_id(1, SegmentDecision.KEEP)
     with qtbot.waitSignal(w.final_mask_requested, timeout=1000) as sig:
