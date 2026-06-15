@@ -3,6 +3,25 @@
 > このファイルがリリースノートの正本です。
 > アプリ同梱の `colmap_mask_editor/CHANGELOG.md` はこのファイルへのポインタです。
 
+## v0.9 (2026-06-15) — 完全被覆・階層型リージョン分割
+
+- 全画素を重複なくリージョンへ割り当てる完全被覆 partition
+- SLICO と Grid Watershed の 2 バックエンド
+- OpenCV contrib 未導入時の自動フォールバック
+- V0.8 SAM 候補をリージョン統合のヒントとして再利用
+- Region Adjacency Graph
+- 色・テクスチャ・境界・SAM 情報による階層統合
+- 粗い／標準／詳細の粒度設定
+- 最初は 20～40 程度の大領域を表示
+- 選択領域だけの局所細分化
+- 親判断の子への継承と子判断による上書き
+- 全画素の KEEP／REMOVE 確定
+- partition.npz によるバイナリー保存
+- partition_manifest と partition_review の分離
+- CPU 専用 QProcess
+- 最終マスクの一括生成・ロールバック・取り消し
+- 設定スキーマ v4→v5
+
 ## v0.8 (2026-06-15) — 全画像自動分割 (SAM 2.1 Automatic Mask Generator)
 
 - SAM 2.1 Automatic Mask Generator による全画像自動分割（各画像を独立解析）

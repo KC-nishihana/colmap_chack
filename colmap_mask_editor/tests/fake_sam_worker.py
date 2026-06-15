@@ -66,6 +66,12 @@ from sam_backend.amg_batch_runner import AmgBatchRunner  # noqa: E402
 MODE = os.environ.get("FAKE_SAM_MODE", "normal")
 
 _REAL_STDOUT = sys.stdout
+# 実 worker と同様に stdout/stdin を utf-8 固定 (日本語の理由文字列等を扱う)。
+try:
+    _REAL_STDOUT.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+except (AttributeError, ValueError):
+    pass
 _STDOUT_LOCK = threading.Lock()
 
 

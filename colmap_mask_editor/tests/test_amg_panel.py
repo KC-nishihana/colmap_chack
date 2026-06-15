@@ -72,14 +72,17 @@ def test_mainwindow_has_amg_tab_and_experimental_label(qtbot):
     from ui.main_window import MainWindow
     win = MainWindow()
     qtbot.addWidget(win)
-    # AIセグメント内のトグルが3つ (単一画像/全画像自動分割/画像伝播(実験的))
+    # AIセグメント内のトグルが4つ (単一画像/全画像自動分割/完全被覆リージョン/画像伝播)
     assert win._ai_view_single.text() == "単一画像"
     assert win._ai_view_amg.text() == "全画像自動分割"
+    assert win._ai_view_partition.text() == "完全被覆リージョン"  # V0.9
     assert "実験的" in win._ai_view_prop.text()
-    # スタックが3面
-    assert win._ai_stack.count() == 3
+    # スタックが4面 (V0.9 で完全被覆リージョンを追加)
+    assert win._ai_stack.count() == 4
     assert hasattr(win, "_amg_panel")
     assert hasattr(win, "_amg_controller")
+    assert hasattr(win, "_partition_panel")
+    assert hasattr(win, "_partition_controller")
 
 
 # ----- レビュー画面 -----

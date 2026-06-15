@@ -22,6 +22,13 @@ from pathlib import Path
 # 一部ライブラリは import 時に print する。stdout は JSON 専用にするため、
 # プロトコル用に本物の stdout を退避し、sys.stdout は stderr へ向ける。
 _REAL_STDOUT = sys.stdout
+# プロトコル (JSON Lines) は日本語パス・理由文字列を含むため stdout を utf-8 に固定。
+# 既定の locale (Windows=cp932) のままだと GUI 側 utf-8 デコーダが壊れる。
+try:
+    _REAL_STDOUT.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    sys.stdin.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+except (AttributeError, ValueError):
+    pass
 sys.stdout = sys.stderr
 
 # パッケージルートを import パスへ (PYTHONPATH が無い直接起動でも動くように)

@@ -196,4 +196,7 @@ def test_amg_oom_retry_success(worker_factory, tmp_path):
     assert w.wait_for(AmgEvent.BATCH_COMPLETED) is not None
     cdir = M.cache_dir_for(tmp_path, images[0]["image_key"])
     man = M.read_json(cdir / "manifest.json")
-    assert man["generator"]["points_per_batch"] == 16  # 縮小値を記録
+    # spec(Step0): generator は要求値、generator_effective に自動縮小の実効値を分離記録。
+    # キャッシュ判定は要求値を使うため、generator は 64 のまま。
+    assert man["generator"]["points_per_batch"] == 64       # 要求値
+    assert man["generator_effective"]["points_per_batch"] == 16  # 縮小実効値

@@ -91,6 +91,28 @@ _DEFAULTS: dict[str, Any] = {
     "amg/review_min_stability": 0,             # % (stability*100)
     "amg/final_mask_mode": "exclude_remove",   # exclude_remove/keep_only/add_remove
     "amg/rle_decode_cache_size": 12,
+
+    # ----- v0.9 完全被覆・階層型リージョン分割 -----
+    "partition/default_preset": "coarse",      # coarse/standard/detailed/custom
+    "partition/backend": "auto",               # auto/slic/grid_watershed
+    "partition/working_max_side": 2048,        # 1024/2048/3072/4096/0(=原寸)
+    "partition/base_region_count": 800,
+    "partition/default_visible_count": 30,
+    "partition/min_region_area_ratio": 10,     # 0.01% 単位 (10 = 0.10%)
+    "partition/slic_region_size": 40,
+    "partition/slic_ruler": 10,                # ruler*10 を実値とする (整数保存)
+    "partition/watershed_seed_spacing": 32,
+    "partition/weight_color": 30,              # 重みは 0..100 整数 (実値=/100)
+    "partition/weight_texture": 10,
+    "partition/weight_boundary": 30,
+    "partition/weight_sam": 25,
+    "partition/weight_size": 5,
+    "partition/sam_sample_count": 64,
+    "partition/sam_top_k": 4,
+    "partition/overlay_opacity": 50,           # %
+    "partition/show_boundaries": True,
+    "partition/show_unreviewed": True,
+    "partition/final_unreviewed_action": "ask",  # ask/keep/remove
 }
 
 # 各設定の有効範囲 (下限, 上限) - 数値型のみ
@@ -130,6 +152,21 @@ _CLAMPS: dict[str, tuple[int, int]] = {
     "amg/review_min_iou":                (0, 100),
     "amg/review_min_stability":          (0, 100),
     "amg/rle_decode_cache_size":         (1, 64),
+    "partition/working_max_side":        (0, 8192),
+    "partition/base_region_count":       (50, 20000),
+    "partition/default_visible_count":   (2, 2000),
+    "partition/min_region_area_ratio":   (0, 10000),
+    "partition/slic_region_size":        (4, 400),
+    "partition/slic_ruler":              (1, 1000),
+    "partition/watershed_seed_spacing":  (4, 512),
+    "partition/weight_color":            (0, 100),
+    "partition/weight_texture":          (0, 100),
+    "partition/weight_boundary":         (0, 100),
+    "partition/weight_sam":              (0, 100),
+    "partition/weight_size":             (0, 100),
+    "partition/sam_sample_count":        (4, 256),
+    "partition/sam_top_k":               (1, 32),
+    "partition/overlay_opacity":         (0, 100),
 }
 
 
@@ -226,6 +263,7 @@ class AppSettings:
         v1 -> v2 (v0.6): AIセグメンテーション設定キーを追加。
         v2 -> v3 (v0.7): 画像伝播 (propagation/*) 設定キーを追加。
         v3 -> v4 (v0.8): 全画像自動分割 (amg/*) 設定キーを追加。
+        v4 -> v5 (v0.9): 完全被覆・階層型リージョン分割 (partition/*) 設定キーを追加。
         いずれも追加のみ (破壊的変更なし)。既存キーはキー名変更がないため保持され、
         欠けているキーは get() がデフォルトを返すので明示書き込みは不要。
         既存ユーザー設定を失わないことが目的。schema_version のみ更新する。

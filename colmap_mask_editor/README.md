@@ -1,4 +1,4 @@
-# COLMAP Mask Editor v0.8
+# COLMAP Mask Editor v0.9
 
 COLMAP形式のプロジェクトに対応した、マスク画像の手動確認・修正GUIツールです。  
 v0.4A では **GrabCutによる半自動マスク生成機能** を追加しました。  
@@ -8,7 +8,54 @@ v0.5.1 では **UI整理（3タブ化）・QSettings設定保存・未確定Grab
 v0.6 では **Meta SAM 2.1 によるAIセグメンテーション（WindowsネイティブCUDA・CUDA拡張必須・QProcess常駐Worker）** を追加しました。  
 v0.6.1 では **CUDA拡張カーネルの直接実行検証・実QProcess統合テスト・終了コード厳格化** を行いました。  
 v0.7 では **SAM 2.1 Video Predictor による複数画像へのマスク伝播・レビュー・一括適用** を追加しました。  
-v0.8 では **SAM 2.1 Automatic Mask Generator による全画像自動分割（各画像を独立解析・RLE圧縮NPZ保存・必要/不要レビュー・最終マスク生成）** を追加しました。
+v0.8 では **SAM 2.1 Automatic Mask Generator による全画像自動分割（各画像を独立解析・RLE圧縮NPZ保存・必要/不要レビュー・最終マスク生成）** を追加しました。  
+v0.9 では **完全被覆・階層型リージョン分割（全画素100%所属・重複なし・粗い階層から判断・局所細分化）** を追加しました。
+
+## v0.9 完全被覆・階層型リージョン分割
+
+V0.8 の Automatic Mask Generator は SAM 候補同士が重複し、未検出画素が残り、1 つの対象に複数の部分候補が
+生成され、判断回数が多くなりがちでした。**v0.9 の「完全被覆リージョン」** は、画像の全画素を **重複なく** リージョンへ
+割り当て、最初に **20〜40 程度の大きなリージョンだけ** を判断します。境界が不十分な場所だけを子リージョンへ展開して
+詳細に判断できます。これが v0.9 の **主レビュー方式** です（V0.8 の AMG 候補レビューは詳細確認用として残しています）。
+
+- **完全被覆リージョンとは**: 全画素を 1 つの葉リージョンへ必ず割り当てる階層型の分割。`region_id 0`（未所属）や
+  負値を残しません。**全画素 100% 所属・重複所属 0・coverage_ratio = 1.0** を保証します。
+- **SAM 候補との違い**: SAM 候補（V0.8 `segments.npz`）は **統合のヒントとしてのみ** 使用し、そのまま最終領域には
+  しません。SAM 候補が無くても色・テクスチャ・境界だけで完全被覆を生成します。
+- **基礎分割バックエンド**:
+  - **SLICO**（`cv2.ximgproc.createSuperpixelSLIC`／OpenCV contrib）
+  - **Grid Watershed**（OpenCV 標準機能のみで動作する必須代替。境界画素 `-1` を隣接領域へ割当）
+  - **AUTO**: SLICO が使えれば SLICO、無ければ Grid Watershed へ **自動フォールバック**。使用バックエンドは
+    manifest へ記録します。
+- **粒度**: 粗い／標準／詳細／カスタム。最初は粗い階層（20〜40 リージョン）を表示します。
+- **階層型リージョン**: 隣接領域のみを **色・テクスチャ・境界・SAM 情報** で階層統合（Region Adjacency Graph +
+  優先度付きキュー）。統合後の各リージョンは原則として連結です。
+- **局所細分化**: レビュー画面で領域をダブルクリックすると、その領域だけを子へ 1 段階分割。Backspace で親へ戻す。
+  画像全体の階層レベルは変えません。
+- **親判断の継承**: 葉の実効判断は葉から root 方向へ最初に見つかった明示判断。子で別判断を設定すれば上書きできます。
+  粒度を変えても判断は失われません（判断は階層ノードへ保存し表示カットと独立）。
+- **KEEP／REMOVE 確定**: 左クリック=KEEP、右クリック=REMOVE、Ctrl+左=未確認、N/Shift+N で次/前の未確認へ移動。
+- **未確認画素率**: 画素所属率・KEEP/REMOVE/未確認率・表示/葉リージョン数を常時表示（葉面積から集計、全解像度
+  マスクは再生成しません）。
+- **最終確定**: 未確認が残る場合は「未確認へ移動／KEEP にする／REMOVE にする／中止」を選択。確定後は未確認画素 0、
+  KEEP 画素 + REMOVE 画素 = 全画素を保証します。
+- **partition.npz**: 階層ツリー・region map の C-order run-length・SAM シグネチャを **固定 dtype 配列**（`allow_pickle=False`・
+  dense H×W ラベルマップ禁止・原子保存・SHA-256・再読込検証）で保存。
+- **partition_manifest.json / partition_review.json**: 管理情報（不変）と判断/UI 状態（小さな JSON）を分離。判断変更は
+  partition_review.json だけを原子更新し、partition.npz を書き換えません。
+- **キャッシュ再利用 / stale / corrupt**: 元画像 fingerprint・画像サイズ・`segments.npz` SHA・partition settings_hash・
+  partition.npz SHA がすべて一致する場合だけ再利用。V0.8 `segments.npz` 再生成や設定変更で stale 判定。stale 時は
+  古い review を自動移行せずバックアップし新規レビューを開始します。
+- **CPU 専用 QProcess**: 重い分割・統合は GUI スレッドではなく CPU 専用 Worker
+  （`partition_backend.partition_worker_main`）で実行。Worker は torch / sam2 / PySide6 を import しません。GUI も
+  torch / sam2 を import しません。
+- **一括適用 / ロールバック / 取り消し**: 複数画像のレビュー完了後、最終マスクを QThread で一括生成。共通トランザクション
+  基盤で原子適用・失敗時ロールバック・最後のバッチ取り消しに対応。
+- **作業解像度**: 8K 画像を全解像度の float 配列で大量保持しません。長辺が `working_max_side`（初期 2048）を超える
+  場合は縮小して基礎分割を生成し、元解像度へは **最近傍補間** で戻します。
+- **ベンチマーク**: `python -m tools.benchmark_partition_builder` で FHD/4K/8K × 粗い/標準を計測し
+  `logs/partition_benchmark.{json,csv}` へ保存します。
+- **日本語・全角スペースパス対応**。
 
 ## v0.8 全画像自動分割 (SAM 2.1 Automatic Mask Generator)
 

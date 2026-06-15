@@ -8,12 +8,22 @@ from pathlib import Path
 
 import pytest
 
-from core.version import APP_DISPLAY_NAME, APP_NAME, APP_VERSION
+from core.version import (
+    APP_DISPLAY_NAME,
+    APP_NAME,
+    APP_VERSION,
+    SETTINGS_SCHEMA_VERSION,
+)
 
 
-def test_app_version_is_0_8():
-    """APP_VERSION が 0.8 である"""
-    assert APP_VERSION == "0.8"
+def test_app_version_is_0_9():
+    """APP_VERSION が 0.9 である"""
+    assert APP_VERSION == "0.9"
+
+
+def test_settings_schema_version_is_5():
+    """設定スキーマバージョンが 5 である (v0.9)"""
+    assert SETTINGS_SCHEMA_VERSION == 5
 
 
 def test_app_display_name_contains_version():

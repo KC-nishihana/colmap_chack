@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QGroupBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -65,6 +66,9 @@ from core.amg_apply_worker import AmgApplyTarget, AmgApplyWorker
 from ui.amg_batch_panel import AmgBatchPanel
 from ui.amg_controller import AmgController
 from ui.amg_review_widget import AmgReviewWidget
+from ui.partition_panel import PartitionPanel
+from ui.partition_controller import PartitionController
+from ui.partition_review_widget import PartitionReviewWidget
 
 _log = logging.getLogger(__name__)
 
@@ -283,6 +287,14 @@ class MainWindow(QMainWindow):
         self._amg_last_apply_record: dict = {}
         self._wire_amg()
 
+        # V0.9: 完全被覆・階層型リージョン分割
+        self._partition_panel = PartitionPanel()
+        self._partition_controller = PartitionController(
+            self._app_settings.get_ai_python_executable(), self)
+        self._partition_review_dialog = None
+        self._partition_active_key: str | None = None
+        self._wire_partition()
+
         ai_tab = QWidget()
         ai_v = QVBoxLayout(ai_tab)
         ai_v.setContentsMargins(2, 2, 2, 2)
@@ -292,10 +304,14 @@ class MainWindow(QMainWindow):
         ai_toggle.setSpacing(2)
         self._ai_view_single = QPushButton("単一画像")
         self._ai_view_amg = QPushButton("全画像自動分割")
+        self._ai_view_partition = QPushButton("完全被覆リージョン")
+        self._ai_view_partition.setToolTip(
+            "V0.9: 全画素を重複なくリージョンへ割り当て、粗い階層から判断する主レビュー方式。")
         self._ai_view_prop = QPushButton("画像伝播(実験的)")
         self._ai_view_prop.setToolTip("V0.7 の実験的機能です。V0.8 の主機能は「全画像自動分割」です。")
         view_group = QButtonGroup(self)
-        for i, b in enumerate((self._ai_view_single, self._ai_view_amg, self._ai_view_prop)):
+        for i, b in enumerate((self._ai_view_single, self._ai_view_amg,
+                               self._ai_view_partition, self._ai_view_prop)):
             b.setCheckable(True)
             view_group.addButton(b, i)
             ai_toggle.addWidget(b)
@@ -313,6 +329,11 @@ class MainWindow(QMainWindow):
         amg_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         amg_scroll.setWidget(self._amg_panel)
         self._ai_stack.addWidget(amg_scroll)
+        partition_scroll = QScrollArea()
+        partition_scroll.setWidgetResizable(True)
+        partition_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        partition_scroll.setWidget(self._partition_panel)
+        self._ai_stack.addWidget(partition_scroll)
         prop_scroll = QScrollArea()
         prop_scroll.setWidgetResizable(True)
         prop_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -2167,6 +2188,115 @@ class MainWindow(QMainWindow):
         c.cancelled.connect(self._amg_on_finished)
         c.completed.connect(self._amg_on_finished)
         c.failed.connect(self._amg_on_failed)
+
+    # ------------------------------------------------------------------ #
+    # V0.9: 完全被覆・階層型リージョン分割 (partition)
+    # ------------------------------------------------------------------ #
+
+    def _wire_partition(self) -> None:
+        p, c = self._partition_panel, self._partition_controller
+        p.apply_settings(self._app_settings)
+        p.generate_requested.connect(self._partition_generate)
+        p.cancel_requested.connect(c.cancel)
+        p.open_review_requested.connect(self._partition_open_review)
+        c.build_started.connect(lambda j: p.set_busy(True))
+        c.stage_changed.connect(lambda j, s: p.set_status(f"処理中: {s}"))
+        c.progress.connect(lambda j, f: p.set_progress(int(f * 100)))
+        c.build_completed.connect(self._partition_on_completed)
+        c.build_failed.connect(self._partition_on_failed)
+        c.build_cancelled.connect(lambda j: (p.set_busy(False), p.set_status("キャンセルしました")))
+        c.worker_error.connect(lambda m: p.set_status(f"Worker エラー: {m}"))
+
+    def _partition_settings(self) -> dict:
+        """パネル設定 + AppSettings から partition 生成設定 dict を作る。"""
+        s = self._app_settings
+        opts = self._partition_panel.options()
+        opts.update({
+            "slic_region_size": s.get("partition/slic_region_size", 0),
+            "slic_ruler": s.get("partition/slic_ruler", 10),
+            "watershed_seed_spacing": 0,
+            "weight_color": s.get("partition/weight_color", 30),
+            "weight_texture": s.get("partition/weight_texture", 10),
+            "weight_boundary": s.get("partition/weight_boundary", 30),
+            "weight_sam": s.get("partition/weight_sam", 25),
+            "weight_size": s.get("partition/weight_size", 5),
+            "sam_sample_count": s.get("partition/sam_sample_count", 64),
+            "sam_top_k": s.get("partition/sam_top_k", 4),
+        })
+        return opts
+
+    def _partition_current_target(self):
+        """現在画像の (image_key, source_path, cache_dir) を返す。無ければ None。"""
+        if self._project is None or not (0 <= self._current_index < len(self._project.entries)):
+            return None
+        entry = self._project.entries[self._current_index]
+        image_key = str(entry.rel_path)
+        cache_dir = amg_manifest.cache_dir_for(self._project.root, image_key)
+        return image_key, str(entry.image_path), cache_dir
+
+    def _partition_generate(self, opts: dict) -> None:
+        target = self._partition_current_target()
+        if target is None:
+            QMessageBox.warning(self, "完全被覆リージョン", "対象画像を選択してください。")
+            self._partition_panel.set_busy(False)
+            return
+        image_key, source_path, cache_dir = target
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        segments = cache_dir / amg_manifest.SEGMENTS_NPZ_NAME
+        settings = self._partition_settings()
+        self._partition_active_key = image_key
+        self._partition_panel.set_busy(True)
+        self._partition_panel.set_progress(0)
+        self._partition_controller.build(
+            job_id=image_key, image_path=source_path, image_key=image_key,
+            output_dir=str(cache_dir), settings=settings,
+            segments_path=str(segments) if segments.exists() else None)
+
+    def _partition_on_completed(self, job_id: str, info: dict) -> None:
+        self._partition_panel.set_busy(False)
+        self._partition_panel.set_progress(100)
+        self._partition_panel.set_status(
+            f"完了: 葉 {info.get('leaf_count')} / 被覆 {info.get('coverage_ratio')} "
+            f"(backend={info.get('backend_used')})")
+
+    def _partition_on_failed(self, job_id: str, code: str, message: str) -> None:
+        self._partition_panel.set_busy(False)
+        self._partition_panel.set_status(f"失敗 [{code}]: {message}")
+        QMessageBox.critical(self, "完全被覆リージョン生成失敗", f"{code}\n{message}")
+
+    def _partition_open_review(self) -> None:
+        from ai import partition_manifest as pman
+        from ai import partition_npz
+        from ai.partition_review_model import PartitionReviewModel
+        target = self._partition_current_target()
+        if target is None:
+            QMessageBox.warning(self, "完全被覆リージョン", "対象画像を選択してください。")
+            return
+        image_key, source_path, cache_dir = target
+        npz_path = cache_dir / pman.PARTITION_NPZ_NAME
+        if not npz_path.exists():
+            QMessageBox.information(self, "完全被覆リージョン",
+                                    "この画像の partition がまだ生成されていません。")
+            return
+        try:
+            data = partition_npz.load_partition_npz(npz_path)
+            review_path = cache_dir / pman.PARTITION_REVIEW_NAME
+            review = pman.read_json(review_path) if review_path.exists() else {}
+            model = PartitionReviewModel(data, review)
+            img = imread_jp(source_path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "完全被覆リージョン", f"読み込みに失敗しました: {e}")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"完全被覆リージョン レビュー — {image_key}")
+        dialog.resize(960, 720)
+        lay = QVBoxLayout(dialog)
+        widget = PartitionReviewWidget()
+        widget.set_partition(img, model)
+        lay.addWidget(widget)
+        self._partition_review_dialog = dialog
+        dialog.show()
 
     def _amg_model_dict(self) -> dict:
         model_id = self._ai_session.model_id or self._amg_panel.options()["model_id"]
