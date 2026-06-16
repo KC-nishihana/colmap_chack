@@ -127,6 +127,23 @@ _DEFAULTS: dict[str, Any] = {
     "partition/show_boundaries": True,
     "partition/show_unreviewed": True,
     "partition/final_unreviewed_action": "ask",  # ask/keep/remove
+
+    # ----- v0.11 統合レビュー画面 (中央キャンバス統合) -----
+    "ui/main_workspace": "review",                  # review/project
+    "ui/default_selection_tool": "ai_click",        # ai_click/ai_automatic/brush/polygon/rectangle/pan
+    "ui/default_apply_operation": "remove",         # add/remove/replace
+    "ui/show_ai_click_button": True,
+    "ui/show_ai_automatic_button": True,
+    "ui/confirm_tool_switch_with_preview": True,
+    "ui/confirm_image_switch_with_unsaved": True,
+    "ui/auto_load_amg_candidates": True,
+    "ui/auto_start_ai_worker": True,
+    "ui/auto_load_ai_model": True,
+    "ui/auto_open_next_incomplete": True,
+    "ui/show_quality_warning": True,
+    "ui/amg_hover_preview": True,
+    "ui/amg_representatives_only": True,
+    "ui/amg_hide_covered": True,
 }
 
 # 各設定の有効範囲 (下限, 上限) - 数値型のみ
@@ -283,6 +300,7 @@ class AppSettings:
         v3 -> v4 (v0.8): 全画像自動分割 (amg/*) 設定キーを追加。
         v4 -> v5 (v0.9): 完全被覆・階層型リージョン分割 (partition/*) 設定キーを追加。
         v5 -> v6 (v0.10): REMOVE_ONLY (amg/review_workflow, amg/remove_only/*) 設定キーを追加。
+        v6 -> v7 (v0.11): 統合レビュー画面 (ui/*) 設定キーを追加。
         いずれも追加のみ (破壊的変更なし)。既存キーはキー名変更がないため保持され、
         欠けているキーは get() がデフォルトを返すので明示書き込みは不要。
         既存ユーザー設定を失わないことが目的。schema_version のみ更新する。

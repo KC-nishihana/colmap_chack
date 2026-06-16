@@ -1,13 +1,21 @@
 """
-V0.10: SAM が同一対象に対して生成した重複候補をグループ化する (numpy のみ)。
+V0.10/V0.11: SAM が同一対象に対して生成した重複候補をグループ化する (numpy のみ)。
 
-目的: REMOVE_ONLY レビューで、ほぼ同じ領域を指す複数候補を 1 件の代表候補へ
+目的: REMOVE_ONLY レビューで、ほぼ同じ領域を指す「重複」候補を 1 件の代表候補へ
 まとめて表示数を減らす。候補を NPZ から削除せず、表示抑制のための索引だけを作る。
 
-同一グループの条件 (どちらかを満たせば同一グループ):
-  - IoU >= group_iou_threshold              (既定 0.85)
-  - 小さい候補の containment >= group_containment_threshold が大きい候補に対し成立
-                                            (既定 0.95)
+V0.11 安全修正: 重複候補と親子候補を分離する。
+  - 重複 (同一グループ) の条件は IoU >= group_iou_threshold だけ。
+  - 包含率が高いだけ (containment >= threshold) の候補は同一グループにせず、
+    親子関係として別に保持する。これにより
+        車両全体 └─ タイヤ / 人物全体 └─ 顔 / 樹木全体 └─ 幹
+    のような入れ子候補が 1 グループに潰れず、個別に選択できる。
+
+親子関係:
+  - 小さい候補が大きい候補に containment >= group_containment_threshold で含まれ、
+    かつ両者が同一 (IoU) グループでなければ、小候補の「親」を大候補とする。
+  - 親が複数あれば最も面積が小さい (最も近い) 親を採用し、同面積は segment_id 昇順。
+  - parent_segment_ids[i] は親候補の segment_id。親が無ければ -1。
 
 最適化:
   - bbox が交差しない候補同士は RLE 比較しない
@@ -42,14 +50,19 @@ __all__ = [
 @dataclass(frozen=True)
 class GroupingResult:
     """候補グループ化の結果 (すべて segment index 順 0..N-1 に整列)。"""
-    group_ids: np.ndarray                 # uint32 (N,)  各 segment の group_id
+    group_ids: np.ndarray                 # uint32 (N,)  各 segment の group_id (IoU 重複)
     representative_segment_ids: np.ndarray  # uint32 (N,)  所属グループの代表 segment_id
     is_representative: np.ndarray         # uint8 (N,)   その segment が代表なら 1
     group_count: int
+    parent_segment_ids: np.ndarray        # int64 (N,)  親候補の segment_id / 親無しは -1
 
     def representative_indices(self) -> set[int]:
         """代表候補の segment index 集合を返す。"""
         return {int(i) for i in np.flatnonzero(self.is_representative)}
+
+    def child_indices(self) -> set[int]:
+        """親を持つ (= 入れ子の子) segment index 集合を返す。"""
+        return {int(i) for i in np.flatnonzero(self.parent_segment_ids >= 0)}
 
 
 def bbox_intersects(b1, b2) -> bool:
@@ -133,6 +146,9 @@ def group_candidates(
             counts_cache[i] = c
         return c
 
+    # 親候補: child_index -> set(parent_index)。containment 成立かつ非同一グループ。
+    parent_candidates: dict[int, list[int]] = {}
+
     for i in range(n):
         bi = bbox[i]
         for j in range(i + 1, n):
@@ -145,16 +161,33 @@ def group_candidates(
             ai, aj = int(area[i]), int(area[j])
             union = ai + aj - inter
             iou = (inter / union) if union > 0 else 0.0
-            # 小さい候補が大きい候補にどれだけ含まれるか
-            small_area = ai if ai <= aj else aj
-            containment = (inter / small_area) if small_area > 0 else 0.0
-            if iou >= iou_threshold or containment >= containment_threshold:
+            # 重複 (同一グループ) は IoU だけで判定する。包含は親子で別管理する。
+            if iou >= iou_threshold:
                 uf.union(i, j)
+                continue
+            # 小さい候補が大きい候補にどれだけ含まれるか
+            if ai <= aj:
+                small, large, small_area = i, j, ai
+            else:
+                small, large, small_area = j, i, aj
+            containment = (inter / small_area) if small_area > 0 else 0.0
+            if containment >= containment_threshold:
+                parent_candidates.setdefault(small, []).append(large)
 
     # group root -> メンバー index
     members: dict[int, list[int]] = {}
     for i in range(n):
         members.setdefault(uf.find(i), []).append(i)
+
+    # 親子関係: 同一グループ内の包含は親子としない (代表へ畳まれるため)。
+    # 親は「最も面積が小さい (最も近い) 親」を採用し、同面積は segment_id 昇順。
+    parent_segment_ids = np.full(n, -1, dtype=np.int64)
+    for child, parents in parent_candidates.items():
+        cand = [p for p in parents if uf.find(p) != uf.find(child)]
+        if not cand:
+            continue
+        best = min(cand, key=lambda p: (int(area[p]), int(segment_ids[p])))
+        parent_segment_ids[child] = int(segment_ids[best])
 
     # group_id は「グループ内最小 segment index」昇順で 0..G-1
     roots_sorted = sorted(members.keys(), key=lambda r: min(members[r]))
@@ -184,4 +217,5 @@ def group_candidates(
         representative_segment_ids=representative_segment_ids,
         is_representative=is_representative,
         group_count=len(roots_sorted),
+        parent_segment_ids=parent_segment_ids,
     )

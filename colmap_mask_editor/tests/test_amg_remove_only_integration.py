@@ -100,6 +100,38 @@ def test_existing_base_remove_only(tmp_path):
     assert np.all(out[20:, :] == 0)
 
 
+def test_full_base_ignores_existing_mask(tmp_path):
+    # V0.10.1 回帰: base_mode=full は既存マスクがあっても全面 255 を基準にする。
+    key, cache_dir, save_path, arrays, (h, w) = _build(tmp_path, with_existing=True)
+    rem_sid = next(int(s) for i, s in enumerate(arrays["segment_ids"].tolist())
+                   if list(arrays["bbox_xywh"][i][:2]) == [2, 2])
+    M.update_manifest_review(
+        cache_dir / "manifest.json",
+        decisions={str(rem_sid): "remove"},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY, base_mode="full", completed=True)
+
+    target = AmgApplyTarget(key, str(cache_dir), str(save_path))
+    out = compose_target_mask(target, "exclude_remove")
+    idx = arrays["segment_ids"].tolist().index(rem_sid)
+    rm = amg_rle.decode_rle(amg_rle.unpack_counts(arrays, idx), h, w) > 0
+    # remove 部分は 0、それ以外は全面 255 (下半分の既存 0 を引き継がない)
+    assert np.all(out[rm] == 0)
+    assert np.all(out[~rm] == 255)
+
+
+def test_full_base_with_size_mismatch_existing_not_loaded(tmp_path):
+    # base_mode=full は既存を読まないため、サイズ不一致でも失敗しない。
+    key, cache_dir, save_path, arrays, (h, w) = _build(tmp_path)
+    bad = np.zeros((h + 5, w), np.uint8)
+    ok, buf = cv2.imencode(".png", bad); buf.tofile(str(save_path))
+    M.update_manifest_review(
+        cache_dir / "manifest.json", decisions={},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY, base_mode="full")
+    target = AmgApplyTarget(key, str(cache_dir), str(save_path))
+    out = compose_target_mask(target, "exclude_remove")
+    assert np.all(out == 255)
+
+
 def test_existing_size_mismatch_rejected(tmp_path):
     key, cache_dir, save_path, arrays, (h, w) = _build(tmp_path)
     # サイズ不一致の既存マスクを置く -> compose は中止 (全面 255 へ黙って置換しない)

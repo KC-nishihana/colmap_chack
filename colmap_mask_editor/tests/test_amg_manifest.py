@@ -94,6 +94,56 @@ def test_update_manifest_review_remove_only_prunes(tmp_path):
     assert man["review"]["completed"] is True
 
 
+def test_build_image_manifest_records_immutable_segment_ids():
+    g = M.preset_settings("fast")
+    man = M.build_image_manifest(
+        image_key="k", source_path="C:/p/x.jpg", width=10, height=10,
+        model=MODEL, generator=g, preset="fast", segment_count=3,
+        segment_ids=[35, 12, 7], segments_npz_sha256="x" * 64,
+        processing_time_sec=1.0, fingerprint={"file_size": 1, "mtime_ns": 2},
+    )
+    # 不変の有効 ID 一覧は昇順 int で記録される (decisions が最小化されても残る)
+    assert man["segment_ids"] == [7, 12, 35]
+
+
+def test_additional_remove_after_save(tmp_path):
+    # V0.10.1 回帰: 12 を REMOVE 保存 -> 再読込 -> 35 を追加 REMOVE -> 両方残る。
+    path = _manifest_with(tmp_path, segment_ids=(12, 35, 7))
+    # 1) segment 12 を REMOVE して保存 (remove_only は decisions を最小化する)
+    M.update_manifest_review(
+        path, decisions={"12": "remove"},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY, base_mode="full")
+    man = json.loads(path.read_text(encoding="utf-8"))
+    assert man["review"]["decisions"] == {"12": "remove"}   # 最小化済み
+
+    # 2) manifest 再読込後に segment 35 を追加 REMOVE。
+    #    有効 ID 一覧は最小化された decisions キー {"12"} ではなく不変 segment_ids。
+    M.update_manifest_review(
+        path, decisions={"12": "remove", "35": "remove"},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY, base_mode="full")
+    man = json.loads(path.read_text(encoding="utf-8"))
+    assert man["review"]["decisions"] == {"12": "remove", "35": "remove"}
+
+
+def test_additional_remove_uses_explicit_valid_ids_for_legacy_manifest(tmp_path):
+    # 不変 segment_ids が無い従来 manifest でも、呼び出し側が valid_segment_ids を
+    # 渡せば追加 REMOVE できる。
+    path = _manifest_with(tmp_path, segment_ids=(12, 35))
+    man = json.loads(path.read_text(encoding="utf-8"))
+    del man["segment_ids"]                       # 旧 manifest を模す
+    M.atomic_write_json(path, man)
+    M.update_manifest_review(
+        path, decisions={"12": "remove"},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY, base_mode="full")
+    # 再読込後、不変 ID が無くても valid_segment_ids 明示で 35 を追加できる
+    M.update_manifest_review(
+        path, decisions={"12": "remove", "35": "remove"},
+        workflow=M.REVIEW_WORKFLOW_REMOVE_ONLY, base_mode="full",
+        valid_segment_ids=[12, 35])
+    man = json.loads(path.read_text(encoding="utf-8"))
+    assert man["review"]["decisions"] == {"12": "remove", "35": "remove"}
+
+
 def test_update_manifest_review_standard_fills(tmp_path):
     path = _manifest_with(tmp_path, segment_ids=(1, 2))
     M.update_manifest_review(

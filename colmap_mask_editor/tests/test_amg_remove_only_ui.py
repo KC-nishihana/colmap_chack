@@ -35,7 +35,9 @@ def _make_project(tmp_path, keys=("IMG_000.png",)):
     for key in keys:
         top = np.zeros((h, w), np.uint8); top[2:18, 2:38] = 1        # 上の帯 (端接触・独立)
         midb = np.zeros((h, w), np.uint8); midb[22:34, 4:16] = 1     # 下左ブロック B
-        midc = np.zeros((h, w), np.uint8); midc[22:34, 5:17] = 1     # B の重複 (高 IoU)
+        # C は B のほぼ複製 (1px だけ移動 -> IoU ~0.99)。面積は B と同じにして
+        # ヒットテストの (面積昇順, index) で B が先頭に来る順序を保つ。
+        midc = midb.copy(); midc[22, 4] = 0; midc[22, 16] = 1        # B の重複 (高 IoU)
         small = np.zeros((h, w), np.uint8); small[25:30, 6:11] = 1   # B 内の小 (B が covered する)
         arrays = amg_npz.build_segment_arrays(
             [_ann(top), _ann(midb), _ann(midc), _ann(small)], h, w)

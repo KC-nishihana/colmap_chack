@@ -69,6 +69,13 @@ from ui.amg_review_widget import AmgReviewWidget
 from ui.partition_panel import PartitionPanel
 from ui.partition_controller import PartitionController
 from ui.partition_review_widget import PartitionReviewWidget
+from ui.unified_tool_bar import UnifiedToolBar
+from core.selection_tools import (
+    ApplyOperation,
+    SelectionTool,
+    from_edit_mode,
+    to_edit_mode,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -140,6 +147,7 @@ class MainWindow(QMainWindow):
 
         self._setup_menu()
         self._setup_central()
+        self._setup_top_toolbar()
         self._setup_shortcuts()
         self._wire_ai_session()
 
@@ -241,6 +249,28 @@ class MainWindow(QMainWindow):
         self._main_splitter.setStretchFactor(2, 0)
 
         self.setCentralWidget(self._main_splitter)
+
+    def _setup_top_toolbar(self) -> None:
+        """V0.11: 選択方法/適用方法の統合ツールバーをウィンドウ上部 (全幅) に置く。
+
+        右パネルは狭く (~440px) ラベルが省略表示になるため、横幅のあるトップツールバー
+        へ配置する。中央キャンバス・編集タブのラジオと双方向同期する。
+        """
+        from PySide6.QtWidgets import QToolBar
+
+        self._unified_tool_bar = UnifiedToolBar(self._app_settings)
+        self._unified_tool_bar.selection_tool_changed.connect(self._on_selection_tool_changed)
+        self._unified_tool_bar.apply_operation_changed.connect(self._on_apply_operation_changed)
+        # 現在の選択ツール / 適用操作
+        self._selection_tool = self._unified_tool_bar.selection_tool()
+        self._apply_operation = self._unified_tool_bar.apply_operation()
+
+        toolbar = QToolBar("ツール", self)
+        toolbar.setObjectName("unified_toolbar")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.addWidget(self._unified_tool_bar)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _build_right_container(self) -> QWidget:
         """右パネル: タブウィジェット + 常時表示ナビエリア。"""
@@ -349,13 +379,89 @@ class MainWindow(QMainWindow):
         tab2_scroll.setWidget(self._build_save_tab())
         self._right_tab_widget.addTab(tab2_scroll, "保存・確認")
 
-        layout.addWidget(self._right_tab_widget, stretch=1)
+        # ----- V0.11: 上位ワークスペースタブ (レビュー / プロジェクト処理) -----
+        # 既存の 4 タブ (_right_tab_widget) は「レビュー」配下へ入れ子にする
+        # (既存ロジック・タブ自動切替・設定をそのまま維持)。
+        # 統合ツールバーは横幅が必要なため、狭い右パネルではなくウィンドウ上部へ置く
+        # (_setup_top_toolbar)。ここではタブ階層だけを組む。
+        review_container = QWidget()
+        review_v = QVBoxLayout(review_container)
+        review_v.setContentsMargins(0, 0, 0, 0)
+        review_v.setSpacing(2)
+        review_v.addWidget(self._right_tab_widget, 1)
+
+        self._workspace_tabs = QTabWidget()
+        self._workspace_tabs.setDocumentMode(False)
+        self._workspace_tabs.addTab(review_container, "レビュー")
+        self._workspace_tabs.addTab(self._build_project_tab(), "プロジェクト処理")
+        layout.addWidget(self._workspace_tabs, stretch=1)
 
         # 常時表示: ナビゲーションボタン
         nav_widget = self._build_nav_area()
         layout.addWidget(nav_widget, stretch=0)
 
         return container
+
+    def _build_project_tab(self) -> QWidget:
+        """プロジェクト処理タブ: 全体処理と従来 AMG レビューの入口 (V0.11)。"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        info = QLabel(
+            "プロジェクト全体の処理を行います。\n"
+            "通常の画像レビューは「レビュー」タブで行ってください。")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        # 従来 AMG レビュー (互換・高度なレビュー用)。通常動線では開かない。
+        legacy_group = QGroupBox("従来の AMG レビュー")
+        legacy_v = QVBoxLayout(legacy_group)
+        legacy_note = QLabel(
+            "V0.10 までのモーダルな AMG 候補レビュー画面です。\n"
+            "互換用・高度なレビュー用に残しています。")
+        legacy_note.setWordWrap(True)
+        legacy_v.addWidget(legacy_note)
+        self._btn_legacy_amg_review = QPushButton("従来の AMG レビューを開く")
+        self._btn_legacy_amg_review.clicked.connect(self._amg_open_review)
+        legacy_v.addWidget(self._btn_legacy_amg_review)
+        layout.addWidget(legacy_group)
+
+        note = QLabel(
+            "全画像 AMG 解析・完全被覆リージョン・画像伝播の各パネルは現在「レビュー」タブ内の"
+            "「AIセグメント」にあります (後続フェーズでこのタブへ移設予定)。")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray;")
+        layout.addWidget(note)
+
+        layout.addStretch(1)
+        return widget
+
+    def _on_selection_tool_changed(self, tool) -> None:
+        """統合ツールバーの選択ツール変更を中央キャンバスへ反映する (双方向同期)。
+
+        AI_AUTOMATIC は対応 EditMode が無い (AMG 候補は B-3 で結線)。ここでは状態だけ
+        保持する。それ以外は現在の適用操作と合わせて EditMode へ変換し _set_mode する。
+        """
+        self._selection_tool = tool
+        if tool is SelectionTool.AI_AUTOMATIC:
+            return
+        try:
+            mode = to_edit_mode(tool, self._apply_operation)
+        except ValueError:
+            return
+        self._set_mode(mode)
+
+    def _on_apply_operation_changed(self, operation) -> None:
+        """統合ツールバーの適用操作変更。矩形/ポリゴンのときだけ EditMode を切替える。"""
+        self._apply_operation = operation
+        if self._selection_tool in (SelectionTool.RECTANGLE, SelectionTool.POLYGON):
+            try:
+                mode = to_edit_mode(self._selection_tool, operation)
+            except ValueError:
+                return
+            self._set_mode(mode)
 
     def _build_edit_tab(self) -> QWidget:
         """編集タブ: 編集モード・ブラシ・マスク表示・差分・モルフォロジー・小領域除去。"""
@@ -364,8 +470,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        # ----- 編集モード -----
-        mode_group = QGroupBox("編集モード")
+        # ----- 編集モード (上部ツールバーと同期。GrabCut 系はここだけ) -----
+        mode_group = QGroupBox("編集モード（上部ツールバーと同期 / GrabCut はこちら）")
         mode_layout = QVBoxLayout(mode_group)
         self._mode_btn_group = QButtonGroup(self)
         self._mode_btns: dict[EditMode, QRadioButton] = {}
@@ -853,7 +959,11 @@ class MainWindow(QMainWindow):
         if splitter_state:
             self._main_splitter.restoreState(splitter_state)
 
-        # タブ番号
+        # ワークスペースタブ (レビュー=0 / プロジェクト処理=1)
+        workspace = s.get("ui/main_workspace", "review")
+        self._workspace_tabs.setCurrentIndex(1 if workspace == "project" else 0)
+
+        # タブ番号 (レビュー配下の編集/GrabCut/AI/保存)
         tab_idx = s.get("window/right_tab_index", 0)
         self._right_tab_widget.setCurrentIndex(tab_idx)
 
@@ -907,6 +1017,7 @@ class MainWindow(QMainWindow):
         s.save_bytes("window/splitter_state", self._main_splitter.saveState())
 
         values = {
+            "ui/main_workspace": "project" if self._workspace_tabs.currentIndex() == 1 else "review",
             "window/right_tab_index": self._right_tab_widget.currentIndex(),
             "edit/brush_size":        self._brush_spin.value(),
             "edit/mask_opacity":      self._opacity_slider.value(),
@@ -3000,9 +3111,8 @@ class MainWindow(QMainWindow):
     ]
 
     def _on_mode_btn_clicked(self, btn_id: int) -> None:
-        mode = self._MODE_ORDER[btn_id]
-        self._canvas.set_edit_mode(mode)
-        self._auto_switch_tab_for_mode(mode)
+        # 編集タブのラジオも統合ツールバーも同じ _set_mode を通す (双方向同期)。
+        self._set_mode(self._MODE_ORDER[btn_id])
 
     def _set_mode(self, mode: EditMode) -> None:
         self._canvas.set_edit_mode(mode)
@@ -3010,6 +3120,25 @@ class MainWindow(QMainWindow):
         if rb:
             rb.setChecked(True)
         self._auto_switch_tab_for_mode(mode)
+        self._sync_toolbar_from_mode(mode)
+
+    def _sync_toolbar_from_mode(self, mode: EditMode) -> None:
+        """編集モードを統合ツールバーへ反映する (双方向同期・シグナル抑制)。
+
+        GrabCut 系など統合ツールバーに対応の無いモードはツールバーを変えない。
+        適用操作 (ADD/REMOVE) は矩形/ポリゴンのときだけ同期する (ブラシ等は不問)。
+        """
+        if not hasattr(self, "_unified_tool_bar"):
+            return
+        mapping = from_edit_mode(mode)
+        if mapping is None:
+            return
+        tool, operation = mapping
+        self._unified_tool_bar.set_selection_tool(tool, emit=False)
+        self._selection_tool = tool
+        if tool in (SelectionTool.RECTANGLE, SelectionTool.POLYGON):
+            self._unified_tool_bar.set_apply_operation(operation, emit=False)
+            self._apply_operation = operation
 
     def _auto_switch_tab_for_mode(self, mode: EditMode) -> None:
         """編集モードに応じてタブを自動切替する。"""

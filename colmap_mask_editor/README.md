@@ -1,4 +1,4 @@
-# COLMAP Mask Editor v0.10
+# COLMAP Mask Editor v0.11
 
 COLMAP形式のプロジェクトに対応した、マスク画像の手動確認・修正GUIツールです。  
 v0.4A では **GrabCutによる半自動マスク生成機能** を追加しました。  

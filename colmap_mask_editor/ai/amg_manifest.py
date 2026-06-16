@@ -107,6 +107,7 @@ __all__ = [
     "atomic_write_json",
     "read_json",
     "build_image_manifest",
+    "manifest_valid_segment_ids",
     "update_manifest_decisions",
     "update_manifest_review",
     "get_review_workflow",
@@ -245,7 +246,10 @@ def build_image_manifest(
     fp = fingerprint if fingerprint is not None else source_fingerprint(source_path)
     gen_block = {k: generator.get(k) for k in GENERATOR_KEYS}
     gen_block["preset"] = preset
-    decisions = {str(int(sid)): "unreviewed" for sid in segment_ids}
+    # 不変の有効 segment_id 一覧 (昇順)。判断保存で decisions を最小化しても
+    # 「有効 ID 一覧」はここから取得する (REMOVE 追加保存で消えないように)。
+    immutable_ids = sorted(int(sid) for sid in segment_ids)
+    decisions = {str(sid): "unreviewed" for sid in immutable_ids}
     return {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "image_key": image_key,
@@ -253,6 +257,7 @@ def build_image_manifest(
         "source_fingerprint": fp,
         "width": int(width),
         "height": int(height),
+        "segment_ids": immutable_ids,
         "model": {
             "model_id": model.get("model_id"),
             "sam2_commit": model.get("sam2_commit"),
@@ -276,18 +281,44 @@ def build_image_manifest(
     }
 
 
+def manifest_valid_segment_ids(
+    manifest: dict[str, Any],
+    valid_segment_ids=None,
+) -> list[str]:
+    """
+    有効 segment_id 一覧 (文字列) を不変ソースから取得する。
+
+    優先順位:
+      1. 明示指定 valid_segment_ids (呼び出し側が segments.npz から渡す)
+      2. manifest トップレベルの不変 "segment_ids" (build_image_manifest が記録)
+      3. (互換) review.decisions のキー — 従来 manifest 用フォールバック
+
+    変更され得る review.decisions のキーを唯一の有効 ID 一覧として使わない。
+    REMOVE_ONLY で decisions を最小化保存した後でも、別 segment を追加できるようにする。
+    """
+    if valid_segment_ids is not None:
+        return [str(int(s)) for s in valid_segment_ids]
+    top = manifest.get("segment_ids")
+    if top:
+        return [str(int(s)) for s in top]
+    return [str(k) for k in manifest.get("review", {}).get("decisions", {}).keys()]
+
+
 def update_manifest_decisions(
     manifest_path,
     decisions: dict[str, str],
     completed: Optional[bool] = None,
+    *,
+    valid_segment_ids=None,
 ) -> dict[str, Any]:
     """
     manifest.json の review.decisions のみを原子的に更新する。NPZ は触らない。
 
-    decisions は normalize_decisions で検証してから書き込む。
+    decisions は normalize_decisions で検証してから書き込む。有効 ID 一覧は
+    変更され得る decisions キーではなく不変ソース (manifest_valid_segment_ids) を使う。
     """
     manifest = read_json(manifest_path)
-    segment_ids = list(manifest.get("review", {}).get("decisions", {}).keys())
+    segment_ids = manifest_valid_segment_ids(manifest, valid_segment_ids)
     normalized = normalize_decisions(decisions, segment_ids=segment_ids)
     review = manifest.setdefault("review", {})
     review["decisions"] = normalized
@@ -311,6 +342,7 @@ def update_manifest_review(
     base_mode: Optional[str] = None,
     ui: Optional[dict[str, Any]] = None,
     completed: Optional[bool] = None,
+    valid_segment_ids=None,
 ) -> dict[str, Any]:
     """
     manifest.json の review ブロックを後方互換で更新する (NPZ は触らない)。
@@ -318,9 +350,14 @@ def update_manifest_review(
     workflow=remove_only のときは decisions を最小化し、REMOVE だけを保存する
     (大量の keep / unreviewed を書かない)。standard のときは従来どおり全件正規化する。
     base_mode / ui / completed は指定時のみ更新する。
+
+    有効 segment_id 一覧は変更され得る既存 decisions のキーではなく、不変ソース
+    (valid_segment_ids 引数 → manifest の segment_ids → 互換フォールバック) を使う。
+    これにより REMOVE を 1 件保存して decisions を最小化した後でも、別 segment を
+    追加 REMOVE できる (両方が保存される)。
     """
     manifest = read_json(manifest_path)
-    segment_ids = list(manifest.get("review", {}).get("decisions", {}).keys())
+    segment_ids = manifest_valid_segment_ids(manifest, valid_segment_ids)
     valid_ids = {str(s) for s in segment_ids}
 
     if workflow == REVIEW_WORKFLOW_REMOVE_ONLY:

@@ -16,14 +16,14 @@ from core.version import (
 )
 
 
-def test_app_version_is_0_10():
-    """APP_VERSION が 0.10 である"""
-    assert APP_VERSION == "0.10"
+def test_app_version_is_0_11():
+    """APP_VERSION が 0.11 である"""
+    assert APP_VERSION == "0.11"
 
 
-def test_settings_schema_version_is_6():
-    """設定スキーマバージョンが 6 である (v0.10)"""
-    assert SETTINGS_SCHEMA_VERSION == 6
+def test_settings_schema_version_is_7():
+    """設定スキーマバージョンが 7 である (v0.11)"""
+    assert SETTINGS_SCHEMA_VERSION == 7
 
 
 def test_app_display_name_contains_version():

@@ -50,7 +50,7 @@ def test_tab_index_clamp_allows_4_tabs(tmp_path):
 
 def test_schema_version_is_current_for_new(tmp_path):
     s = AppSettings(filepath=str(tmp_path / "s.ini"))
-    assert s.schema_version == SETTINGS_SCHEMA_VERSION == 6  # v0.10
+    assert s.schema_version == SETTINGS_SCHEMA_VERSION == 7  # v0.11
 
 
 def test_remove_only_defaults(tmp_path):

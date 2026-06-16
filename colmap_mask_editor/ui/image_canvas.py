@@ -179,6 +179,22 @@ class ImageCanvas(QWidget):
         self._ai_box_dragging: bool = False
         self._ai_press_widget_pos: Optional[QPointF] = None
 
+        # ----- v0.11 統合レビュー: AMG候補 / AIクリック オーバーレイ -----
+        # 4K/8K でも全候補の dense マスクを同時保持しない。呼び出し側 (controller) が
+        # RLE と MaskDecodeCache を使い、現在候補 / ホバー候補 / 適用済み和集合だけを
+        # 復号して (H,W) マスクで渡す。candidate_provider はヒットテスト用の参照のみ。
+        self._amg_candidate_provider = None
+        self._amg_selected_mask: Optional[np.ndarray] = None   # 現在候補 (水色)
+        self._amg_hover_mask: Optional[np.ndarray] = None      # ホバー候補 (淡い水色)
+        self._amg_remove_union: Optional[np.ndarray] = None    # 適用済みREMOVE (半透明赤)
+        self._amg_add_union: Optional[np.ndarray] = None       # 適用済みADD (半透明緑)
+        self._interactive_ai_preview: Optional[np.ndarray] = None  # AIクリック候補 (白境界)
+        # 表示切替 (☑現在候補 / ☑REMOVE済み / ...)。既定は全て表示。
+        self._amg_overlay_visible: dict[str, bool] = {
+            "selected": True, "hover": True, "remove": True,
+            "add": True, "preview": True,
+        }
+
         self.setMinimumSize(400, 300)
 
     # ------------------------------------------------------------------ #
@@ -419,6 +435,81 @@ class ImageCanvas(QWidget):
         """AI_PROMPTモードのアクティブ状態 (カーソル表示用)。"""
         self._ai_active = active
         self.update()
+
+    # ------------------------------------------------------------------ #
+    # v0.11 統合レビュー: AMG候補 / AIクリック オーバーレイ API
+    # ------------------------------------------------------------------ #
+    #
+    # マスクはすべて元画像座標の (H,W) uint8/bool。None で非表示。controller が
+    # RLE/MaskDecodeCache で必要分だけ復号して渡す (4K/8K で全 dense を持たない)。
+
+    @staticmethod
+    def _as_overlay_mask(mask_or_rle) -> Optional[np.ndarray]:
+        """(H,W) の bool マスクへ正規化する。None はそのまま。
+
+        dense マスク (np.ndarray) のみを受け付ける。RLE 復号は controller 側で行う
+        (canvas に torch/sam2/amg_rle 依存を持ち込まない)。
+        """
+        if mask_or_rle is None:
+            return None
+        arr = np.asarray(mask_or_rle)
+        if arr.ndim >= 3:
+            arr = arr[:, :, 0]
+        return arr > 0 if arr.dtype == bool else arr >= 128
+
+    def set_amg_candidates(self, candidate_provider) -> None:
+        """ヒットテスト/反復用の候補プロバイダ参照を保持する (dense は持たない)。"""
+        self._amg_candidate_provider = candidate_provider
+
+    def amg_candidate_provider(self):
+        return self._amg_candidate_provider
+
+    def set_amg_selected_candidate(self, mask_or_rle) -> None:
+        """現在候補 (水色) を設定する。"""
+        self._amg_selected_mask = self._as_overlay_mask(mask_or_rle)
+        self.update()
+
+    def set_amg_hover_candidate(self, mask_or_rle) -> None:
+        """ホバー候補 (淡い水色) を設定する。"""
+        self._amg_hover_mask = self._as_overlay_mask(mask_or_rle)
+        self.update()
+
+    def set_amg_remove_union(self, mask: Optional[np.ndarray]) -> None:
+        """適用済み REMOVE 和集合 (半透明赤) を設定する。"""
+        self._amg_remove_union = self._as_overlay_mask(mask)
+        self.update()
+
+    def set_amg_add_union(self, mask: Optional[np.ndarray]) -> None:
+        """適用済み ADD 和集合 (半透明緑) を設定する。"""
+        self._amg_add_union = self._as_overlay_mask(mask)
+        self.update()
+
+    def set_interactive_ai_preview(self, mask: Optional[np.ndarray]) -> None:
+        """AIクリック候補プレビュー (白/シアンの境界) を設定する。"""
+        self._interactive_ai_preview = self._as_overlay_mask(mask)
+        self.update()
+
+    def set_ai_review_overlay_visible(self, layer: str, visible: bool) -> None:
+        """表示切替 (layer: selected/hover/remove/add/preview)。"""
+        if layer in self._amg_overlay_visible:
+            self._amg_overlay_visible[layer] = bool(visible)
+            self.update()
+
+    def clear_ai_review_overlays(self) -> None:
+        """AMG/AIクリックのレビューオーバーレイをすべて消す (画像切替時など)。"""
+        self._amg_candidate_provider = None
+        self._amg_selected_mask = None
+        self._amg_hover_mask = None
+        self._amg_remove_union = None
+        self._amg_add_union = None
+        self._interactive_ai_preview = None
+        self.update()
+
+    def _has_amg_overlays(self) -> bool:
+        return any(m is not None for m in (
+            self._amg_selected_mask, self._amg_hover_mask,
+            self._amg_remove_union, self._amg_add_union,
+            self._interactive_ai_preview))
 
     # ------------------------------------------------------------------ #
     # 描画
@@ -689,7 +780,79 @@ class ImageCanvas(QWidget):
                 ai_mask = cv2.resize(ai_mask, (dw, dh), interpolation=cv2.INTER_NEAREST)
             result = self._overlay_ai_preview(result, ai_mask)
 
+        # v0.11 統合レビュー: AMG候補 / AIクリック オーバーレイ
+        if self._has_amg_overlays():
+            result = self._overlay_ai_review(result, ih, iw, dw, dh, needs_scale)
+
         return result
+
+    def _overlay_ai_review(self, base: np.ndarray, ih: int, iw: int,
+                           dw: int, dh: int, needs_scale: bool) -> np.ndarray:
+        """AMG候補 / AIクリックのレビューオーバーレイを表示解像度で重ねる。
+
+        描画順 (下→上): 適用済みREMOVE(赤) / 適用済みADD(緑) / 現在候補(水色) /
+        ホバー候補(淡い水色) / AIクリックプレビュー(白境界)。
+        マスクは元画像 (H,W)。表示解像度へ NEAREST 縮小してから合成する。
+        """
+        vis = self._amg_overlay_visible
+        result = base
+
+        def prep(mask: Optional[np.ndarray]) -> Optional[np.ndarray]:
+            if mask is None or mask.shape[:2] != (ih, iw):
+                return None
+            m = mask.astype(np.uint8)
+            if needs_scale:
+                m = cv2.resize(m, (dw, dh), interpolation=cv2.INTER_NEAREST)
+            return m > 0
+
+        # 適用済み和集合 (半透明フィル)
+        if vis["remove"]:
+            m = prep(self._amg_remove_union)
+            if m is not None:
+                result = self._blend_color(result, m, (60, 60, 230), 0.40)  # BGR 赤
+        if vis["add"]:
+            m = prep(self._amg_add_union)
+            if m is not None:
+                result = self._blend_color(result, m, (60, 200, 60), 0.40)  # BGR 緑
+        # 現在候補 (水色 = light blue) フィル
+        if vis["selected"]:
+            m = prep(self._amg_selected_mask)
+            if m is not None:
+                result = self._blend_color(result, m, (255, 220, 120), 0.50)  # BGR 水色
+        # ホバー候補 (淡い水色)
+        if vis["hover"]:
+            m = prep(self._amg_hover_mask)
+            if m is not None:
+                result = self._blend_color(result, m, (255, 230, 160), 0.28)
+        # AIクリックプレビュー (白の境界線)
+        if vis["preview"]:
+            m = prep(self._interactive_ai_preview)
+            if m is not None:
+                result = self._draw_boundary(result, m, (255, 255, 255), thickness=2)
+        return result
+
+    @staticmethod
+    def _blend_color(base: np.ndarray, region: np.ndarray,
+                     bgr: tuple[int, int, int], alpha: float) -> np.ndarray:
+        """region (bool) を BGR 色で半透明合成する。"""
+        if not np.any(region):
+            return base
+        color = np.array(bgr, dtype=np.float32)
+        out = base.astype(np.float32)
+        out[region] = out[region] * (1.0 - alpha) + color * alpha
+        return out.clip(0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _draw_boundary(base: np.ndarray, region: np.ndarray,
+                       bgr: tuple[int, int, int], thickness: int = 2) -> np.ndarray:
+        """region (bool) の輪郭線を描く (フィルしない・候補を隠さない)。"""
+        if not np.any(region):
+            return base
+        m = (region.astype(np.uint8)) * 255
+        contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        out = base.copy()
+        cv2.drawContours(out, contours, -1, bgr, thickness)
+        return out
 
     def _overlay_ai_preview(self, base: np.ndarray, ai_mask: np.ndarray) -> np.ndarray:
         """AI候補マスクをシアン系の半透明オーバーレイで表示。"""

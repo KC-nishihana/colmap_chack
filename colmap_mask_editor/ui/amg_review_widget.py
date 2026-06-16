@@ -1050,6 +1050,9 @@ class AmgReviewWidget(QDialog):
     def _save_decisions(self, completed: Optional[bool] = None) -> None:
         if self._cur_manifest_path is None or self._npz is None:
             return
+        # 有効 segment_id 一覧は不変の NPZ から取得する。保存で最小化された
+        # 既存 decisions のキーに依存しない (追加 REMOVE が消えないように)。
+        valid_ids = self._npz["segment_ids"].tolist()
         try:
             if self._workflow == ro.WORKFLOW_REMOVE_ONLY:
                 amg_manifest.update_manifest_review(
@@ -1058,10 +1061,12 @@ class AmgReviewWidget(QDialog):
                     workflow=ro.WORKFLOW_REMOVE_ONLY,
                     base_mode=self._base_mode,
                     ui=self._ui_state(),
-                    completed=completed)
+                    completed=completed,
+                    valid_segment_ids=valid_ids)
             else:
                 amg_manifest.update_manifest_decisions(
-                    self._cur_manifest_path, self._decisions, completed=completed)
+                    self._cur_manifest_path, self._decisions, completed=completed,
+                    valid_segment_ids=valid_ids)
         except Exception as e:  # noqa: BLE001
             _log.error("decisions 保存失敗: %s", e)
 

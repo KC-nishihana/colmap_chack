@@ -200,3 +200,42 @@ def test_load_returns_all_keys(tmp_settings):
     assert "edit/brush_size" in data
     assert "grabcut/iter_count" in data
     assert "file/last_folder" in data
+
+
+# ------------------------------------------------------------------ #
+# v0.11 統合レビュー画面の設定キー / スキーマ移行
+# ------------------------------------------------------------------ #
+
+def test_v011_ui_defaults(tmp_settings):
+    """ui/* 既定値が仕様どおり (動線1 = AIクリック / 除外する)"""
+    assert tmp_settings.get("ui/main_workspace") == "review"
+    assert tmp_settings.get("ui/default_selection_tool") == "ai_click"
+    assert tmp_settings.get("ui/default_apply_operation") == "remove"
+    assert tmp_settings.get("ui/auto_start_ai_worker") is True
+    assert tmp_settings.get("ui/auto_load_amg_candidates") is True
+    assert tmp_settings.get("ui/amg_representatives_only") is True
+
+
+def test_schema_version_is_7(tmp_settings):
+    from core.version import SETTINGS_SCHEMA_VERSION
+    assert SETTINGS_SCHEMA_VERSION == 7
+    assert tmp_settings.schema_version == 7
+
+
+def test_v6_to_v7_migration_preserves_existing(tmp_path):
+    """v6 設定 (旧バージョン) からの移行で既存値が失われない。"""
+    ini_path = str(tmp_path / "settings.ini")
+    # v6 相当の設定を直接書く (schema_version=6 と既存ユーザー値)
+    from PySide6.QtCore import QSettings
+    raw = QSettings(ini_path, QSettings.Format.IniFormat)
+    raw.setValue("meta/schema_version", 6)
+    raw.setValue("edit/brush_size", 123)
+    raw.setValue("amg/review_workflow", "remove_only")
+    raw.sync()
+
+    s = AppSettings(filepath=ini_path)        # __init__ で migrate() が走る
+    assert s.schema_version == 7               # v7 へ移行
+    assert s.get("edit/brush_size") == 123     # 既存値を保持
+    assert s.get("amg/review_workflow") == "remove_only"
+    # 新規キーは既定値で取得できる
+    assert s.get("ui/default_selection_tool") == "ai_click"

@@ -3,6 +3,32 @@
 > このファイルがリリースノートの正本です。
 > アプリ同梱の `colmap_mask_editor/CHANGELOG.md` はこのファイルへのポインタです。
 
+## v0.11 (進行中) — 中央キャンバス統合レビュー
+
+> 段階的に実装中。以下は完了済みの基盤 (フェーズ1: 安全修正 + バージョン/スキーマ更新)。
+
+### V0.10.1 相当の安全修正
+
+- 追加 REMOVE 保存: REMOVE_ONLY で 1 候補を保存して `review.decisions` を最小化した後でも、別 segment を追加 REMOVE できる。有効 segment_id 一覧は可変な `review.decisions` のキーではなく、不変ソース (manifest 先頭の `segment_ids` / `segments.npz` の `segment_ids`) から取得する
+- `base_mode` の反映: 最終マスク生成 (`compose_target_mask`) が `review.base_mode=full` を尊重し、既存マスクがあっても全面 255 を基準にする (既存は読み込まない)
+- 重複候補と親子候補の分離: 同一グループ化は `IoU >= group_iou_threshold` だけで判定。包含率が高いだけの候補 (車両 └ タイヤ / 人物 └ 顔 / 樹木 └ 幹) は同一グループにせず親子関係 (`parent_segment_ids`) として保持。`review_index` のスキーマを 2 へ上げ、旧キャッシュは新算法で自動再計算
+
+### 基盤
+
+- 選択ツールと適用操作を分離する `SelectionTool` / `ApplyOperation` enum を追加 (`core/selection_tools.py`)。既存 `EditMode` は後方互換アダプタ (`to_edit_mode` / `from_edit_mode`) として維持
+- 上部統合ツールバー `UnifiedToolBar` (`ui/unified_tool_bar.py`) を追加。選択方法 [AIクリック/画像全体を自動分割/ブラシ/ポリゴン/矩形/パン] と適用方法 [有効にする/除外する/置き換える] を 2 軸で常時表示し、`selection_tool_changed` / `apply_operation_changed` を emit。初期値 AIクリック/除外する、`ui/*` 設定で既定値とAIボタン表示を反映
+- `ImageCanvas` へレビューオーバーレイ API を追加 (`set_amg_candidates` / `set_amg_selected_candidate` / `set_amg_hover_candidate` / `set_amg_remove_union` / `set_amg_add_union` / `set_interactive_ai_preview` / `set_ai_review_overlay_visible` / `clear_ai_review_overlays`)。現在候補=水色、適用済みREMOVE=半透明赤、適用済みADD=半透明緑、AIクリック=白境界。表示解像度で合成し全候補の dense マスクを同時保持しない (4K/8K 対応)。controller が RLE/MaskDecodeCache で現在/ホバー/累積和集合だけを復号して渡す。既存描画には非干渉 (未設定時は元画像のまま)
+- 保存/確定時の自動品質チェック `unified_quality_check` (`ai/unified_quality_check.py`) を追加。errors(サイズ/dtype/0-255値域=保存不可) と warnings(除外率0%/95%以上/全面0/全面255/前回差分50%以上=確認のみ) を返す純粋関数
+- 統合レビュー状態 `unified_review_state` (`ai/unified_review_state.py`, `unified_review.json`) を追加。通常マスクを正本とし、候補適用状態 (add/remove)・UI設定・完了フラグを UI 補助情報として原子保存。マスク SHA-256 不一致で stale。segments.npz は判断変更で書き換えない
+- 統一 Undo/Redo `UnifiedEditCommand` / `UnifiedEditHistory` (`core/unified_edit_command.py`) を追加。AI候補適用も手動編集と同じ履歴へ入れ、マスク (MaskEditor 履歴) と AI 判断メタデータを同じ歩調で Undo/Redo。`MaskEditor.replace()` (Undo 可能な一括差し替え) を追加
+- 現在画像 AMG コントローラ `CurrentImageAmgController` (`core/current_image_amg_controller.py`) を追加。動線2 のデータ基盤として既存プリミティブ (evaluate_cache / ensure_review_index / MaskDecodeCache / candidates_at_point / is_covered) を束ね、キャッシュ状態 (missing/ready/stale/corrupt) 判定・候補の遅延復号・代表候補/親子/確認順・代表のみ表示・covered 抑制・並べ替えを提供 (非GUI・全 dense を保持しない)
+- 右パネルを上位 2 タブ「レビュー / プロジェクト処理」へ再構成。既存の 4 タブ (編集/GrabCut/AIセグメント/保存・確認) は「レビュー」配下へ入れ子化 (既存タブ・自動切替・設定は維持)。「プロジェクト処理」へ従来 AMG レビューの入口を追加 (通常動線では開かない)。`ui/main_workspace` を保存/復元
+- `UnifiedToolBar` は横幅確保のためウィンドウ上部 (全幅) のトップツールバーへ配置 (狭い右パネルではラベルが省略され判読不能だったため)。選択中ボタンの強調・グループ区切り線・余白を調整し可読性を改善。編集タブの「編集モード」ラジオはツールバーと同期する旨をラベルで明示 (GrabCut 系はラジオのみ)
+- 統合ツールバーと中央キャンバス / 編集タブのラジオを双方向同期。`SelectionTool`+`ApplyOperation` を `EditMode` へ変換 (ブラシ/ポリゴン/矩形/パン/AIクリック) して `_set_mode` で反映し、逆にモード変更もツールバーへ反映 (シグナル抑制でループ回避)。矩形/ポリゴンは ADD/REMOVE を EditMode へ写像。AI_AUTOMATIC は対応モード無しのため状態保持のみ (AMG 候補は後続フェーズ)、GrabCut 系はツールバー非対応として現状維持
+- 統合レビュー画面の設定キー `ui/*` を追加 (既定: workspace=review, 選択=ai_click, 適用=remove ほか)
+- 設定スキーマ v6→v7 (追加のみ。V0.10 以前の設定を保持)
+- `APP_VERSION = "0.11"`
+
 ## v0.10 (2026-06-16) — REMOVE_ONLY「不要領域だけ選択」レビュー方式
 
 - V0.8 AMG を主軸に「例外レビュー方式」(`remove_only`) を追加。全画素を暗黙 KEEP とし、不要候補だけを REMOVE する

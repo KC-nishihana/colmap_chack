@@ -38,13 +38,40 @@ def test_high_iou_same_group():
     assert len(set(res.group_ids.tolist())) == 1
 
 
-def test_containment_same_group_low_iou():
+def test_containment_is_parent_child_not_same_group():
+    # V0.11: 包含率が高いだけ (IoU 低) の候補は同一グループにせず親子として保持する。
     h, w = 60, 60
     outer = _rect(h, w, 0, 50, 0, 50)        # area 2500
     inner = _rect(h, w, 5, 15, 5, 15)        # area 100, 完全に outer 内 -> containment 1.0, IoU 低
     arrays = amg_npz.build_segment_arrays([_ann(outer), _ann(inner)], h, w)
     res = gp.group_candidates(arrays, iou_threshold=0.85, containment_threshold=0.95)
-    assert res.group_count == 1
+    # 別グループ (タイヤが車両に潰れない)
+    assert res.group_count == 2
+    assert len(set(res.group_ids.tolist())) == 2
+    # 親子関係: inner (小) の親は outer (大)
+    s2i = _sid_to_index(arrays)
+    outer_sid = next(int(s) for i, s in enumerate(arrays["segment_ids"].tolist())
+                     if int(arrays["area"][i]) == 2500)
+    inner_sid = next(int(s) for i, s in enumerate(arrays["segment_ids"].tolist())
+                     if int(arrays["area"][i]) == 100)
+    assert int(res.parent_segment_ids[s2i[inner_sid]]) == outer_sid
+    assert int(res.parent_segment_ids[s2i[outer_sid]]) == -1   # 親は無い
+    assert res.child_indices() == {s2i[inner_sid]}
+
+
+def test_nested_parent_is_closest():
+    # タイヤ ⊂ ホイール ⊂ 車両: タイヤの親は最も近い (面積最小の) ホイール。
+    h, w = 80, 80
+    vehicle = _rect(h, w, 0, 70, 0, 70)      # area 4900
+    wheel = _rect(h, w, 10, 40, 10, 40)      # area 900, vehicle 内
+    tire = _rect(h, w, 15, 25, 15, 25)       # area 100, wheel 内
+    arrays = amg_npz.build_segment_arrays([_ann(vehicle), _ann(wheel), _ann(tire)], h, w)
+    res = gp.group_candidates(arrays, iou_threshold=0.85, containment_threshold=0.95)
+    assert res.group_count == 3
+    s2i = _sid_to_index(arrays)
+    by_area = {int(arrays["area"][i]): int(s) for i, s in enumerate(arrays["segment_ids"].tolist())}
+    tire_sid, wheel_sid = by_area[100], by_area[900]
+    assert int(res.parent_segment_ids[s2i[tire_sid]]) == wheel_sid   # 最も近い親
 
 
 def test_distinct_objects_different_groups():

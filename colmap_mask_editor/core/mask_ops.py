@@ -49,6 +49,17 @@ class MaskEditor:
         """ドラッグ開始時に現在状態を Undo スタックに積む"""
         self._push_undo()
 
+    def replace(self, new_mask: np.ndarray) -> None:
+        """
+        マスク全体を 1 操作で差し替える (Undo 可能)。
+
+        現在状態を Undo スタックへ積んでから差し替える。AI候補の適用 (REMOVE 和集合
+        を 0 にする等) のように、1 コマンドでマスク全体が変わる編集に使う。
+        set_mask (履歴クリア) とは異なり履歴を保持する。
+        """
+        self._push_undo()
+        self._current = new_mask.copy()
+
     def undo(self) -> bool:
         """Undo: 1つ前の状態に戻す。成功したら True を返す"""
         if not self._undo_stack:

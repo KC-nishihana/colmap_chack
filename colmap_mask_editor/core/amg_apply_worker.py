@@ -19,6 +19,7 @@ import numpy as np
 
 from ai import amg_manifest, amg_mask_composer, amg_npz
 from ai.amg_mask_composer import FINAL_MASK_MODES
+from ai.amg_remove_only import BASE_FULL
 from core.mask_apply_tx import (
     ApplyTxError,
     ApplyTxOutcome,
@@ -51,13 +52,20 @@ def compose_target_mask(target: AmgApplyTarget, mode: str) -> np.ndarray:
 
     data = amg_npz.load_segments_npz(npz_path)
     manifest = amg_manifest.read_json(manifest_path)
-    decisions = manifest.get("review", {}).get("decisions", {})
+    review = manifest.get("review", {})
+    decisions = review.get("decisions", {})
+    # base_mode=full のときは既存マスクがあっても全面 255 を基準にする。
+    # (REMOVE_ONLY で「全面を基準に不要領域だけ除外」を選んだ場合の意図を尊重する)
+    base_mode = review.get("base_mode")
+    force_full_base = (base_mode == BASE_FULL)
 
     image_shape = np.asarray(data["image_shape"])
     h, w = int(image_shape[0]), int(image_shape[1])
 
     existing = None
-    if mode in (amg_mask_composer.MODE_EXCLUDE_REMOVE, amg_mask_composer.MODE_ADD_REMOVE):
+    if (not force_full_base) and mode in (
+        amg_mask_composer.MODE_EXCLUDE_REMOVE, amg_mask_composer.MODE_ADD_REMOVE
+    ):
         img = imread_jp(Path(target.save_path))
         if img is not None:
             if img.ndim >= 3:
